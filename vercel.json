@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/creative-deck.js": {
+      "maxDuration": 60
+    }
+  }
+}
