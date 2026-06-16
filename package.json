@@ -5,6 +5,7 @@
   "description": "Vercel serverless backend that powers Chacevia's AI creative director endpoint.",
   "type": "module",
   "dependencies": {
-    "openai": "^6.0.0"
+    "openai": "^6.0.0",
+    "pptxgenjs": "^4.0.1"
   }
 }
