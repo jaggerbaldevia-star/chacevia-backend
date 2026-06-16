@@ -10,7 +10,12 @@
 // then open and edit it in PowerPoint, Google Slides, Keynote, or Canva.
 
 import OpenAI from "openai"
-import pptxgen from "pptxgenjs"
+// pptxgenjs ships an ES-module build that conflicts with this project's module
+// setup on Vercel. Loading it through createRequire forces its CommonJS build,
+// which runs cleanly in the serverless environment.
+import { createRequire } from "module"
+const require = createRequire(import.meta.url)
+const pptxgen = require("pptxgenjs")
 
 const MAX_INPUT_LENGTH = 3000
 const MAX_CONTEXT_LENGTH = 8000
