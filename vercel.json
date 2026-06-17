@@ -2,6 +2,9 @@
   "functions": {
     "api/creative-deck.js": {
       "maxDuration": 60
+    },
+    "api/research-deck.js": {
+      "maxDuration": 60
     }
   }
 }
