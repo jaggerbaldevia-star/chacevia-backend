@@ -1,23 +1,24 @@
 // api/research-deck.js
 //
-// Chacevia's "Research Deck" feature, at:  /api/research-deck
+// Chacevia's "Research Deck", at:  /api/research-deck
+// Researches a topic (web search + citations), builds a speech-style deck with
+// luxury Unsplash photos, and a Sources & Credits slide.
 //
-// Pipeline:
-//   1. Research the topic with OpenAI web search (returns real source citations).
-//   2. Structure it like a speech (hook → thesis → cited points → call to action).
-//   3. Pull a luxury Unsplash photo for each slide.
-//   4. Build a .pptx with the photos + a "Sources & Credits" slide.
-//
-// Needs OPENAI_API_KEY (already set) and UNSPLASH_ACCESS_KEY (new, free).
-// If the Unsplash key is missing, it still builds — just without photos.
+// Speed-tuned to finish under the 60s serverless limit:
+//   - ONE combined AI call (research + structure together)
+//   - photos downloaded in PARALLEL, capped, and size-limited
 
 import OpenAI from "openai"
 import { createRequire } from "module"
 const require = createRequire(import.meta.url)
 const pptxgen = require("pptxgenjs")
 
+// Give this function the full 60s the Hobby plan allows.
+export const config = { maxDuration: 60 }
+
 const MAX_INPUT_LENGTH = 3000
 const DEFAULT_MODEL = "gpt-5.5"
+const MAX_PHOTOS = 4
 
 function setCorsHeaders(res) {
     res.setHeader("Access-Control-Allow-Origin", "*")
@@ -27,25 +28,23 @@ function setCorsHeaders(res) {
 
 const SPEECH_INSTRUCTIONS = `You are Chacevia's speech & presentation director for students.
 
-Using ONLY the researched facts and the numbered sources provided, build a compelling, well-supported speech presentation. Return ONLY valid JSON — no markdown, no backticks, no commentary — matching exactly:
+Research the topic using the web, then build a compelling, well-supported speech presentation. Return ONLY valid JSON — no markdown, no backticks, no commentary — matching exactly:
 
 {
   "deckTitle": "Striking title (max 7 words)",
   "subtitle": "One-line thesis",
   "slides": [
-    { "heading": "Slide heading (max 6 words)", "bullets": ["short point with a citation like [1]", "..."], "imageQuery": "1-3 words for a fitting photo", "notes": "one sentence the speaker can say" }
+    { "heading": "Slide heading (max 6 words)", "bullets": ["short point", "short point", "short point"], "imageQuery": "1-3 words for a fitting photo", "notes": "one sentence the speaker can say" }
   ]
 }
 
 Rules:
-- 6 to 8 slides, ordered like a speech: a hook, the thesis, 3 evidence points, a counterpoint/rebuttal, and a closing call to action.
-- 3 to 4 bullets per slide, each under 14 words, punchy and concrete.
-- Cite facts with [n] markers that map to the numbered sources you were given. Only cite numbers that exist.
+- Exactly 6 slides, ordered like a speech: a hook, the thesis, three evidence points grounded in real facts/statistics you found, and a closing call to action.
+- 3 to 4 bullets per slide, each under 14 words, concrete and accurate.
 - "imageQuery": 1-3 words describing a premium, evocative, relevant photo (real-world imagery, not text/charts).
-- "notes": a natural sentence the student could actually say out loud for that slide.
+- "notes": a natural sentence the student could say out loud.
 - No filler, no cheesy language. Clear, intelligent, persuasive.`
 
-// Walk the web-search response and collect unique source citations.
 function extractSources(resp) {
     const out = []
     const seen = new Set()
@@ -75,7 +74,6 @@ function parseDeckJson(text) {
     return JSON.parse(t.slice(first, last + 1))
 }
 
-// Fetch one luxury Unsplash photo + photographer credit, embedded as base64.
 async function fetchUnsplash(query, key) {
     try {
         const url =
@@ -86,9 +84,10 @@ async function fetchUnsplash(query, key) {
         const j = await r.json()
         const photo = j.results && j.results[0]
         if (!photo) return null
-        const imgUrl =
-            (photo.urls && (photo.urls.regular || photo.urls.small)) || null
-        if (!imgUrl) return null
+        const base = photo.urls && (photo.urls.raw || photo.urls.regular || photo.urls.small)
+        if (!base) return null
+        // Ask Unsplash for a modest, fast-loading size.
+        const imgUrl = photo.urls.raw ? base + "&w=1100&q=70&fm=jpg&fit=crop" : base
         const ir = await fetch(imgUrl)
         if (!ir.ok) return null
         const buf = Buffer.from(await ir.arrayBuffer())
@@ -101,7 +100,6 @@ async function fetchUnsplash(query, key) {
     }
 }
 
-// Build the .pptx. slides may carry a fetched ._img. sources/photoCredits go on a final slide.
 function buildDeck(data, sources, photoCredits) {
     const BG = "0F0E0D"
     const INK = "F6F1EA"
@@ -112,7 +110,6 @@ function buildDeck(data, sources, photoCredits) {
     pptx.layout = "LAYOUT_WIDE"
     pptx.defineSlideMaster({ title: "CHACEVIA", background: { color: BG } })
 
-    // Title slide
     const title = pptx.addSlide({ masterName: "CHACEVIA" })
     title.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 0.25, h: 7.5, fill: { color: ACCENT } })
     title.addText("CHACEVIA", { x: 0.9, y: 0.7, w: 11, h: 0.4, fontFace: "Arial", fontSize: 12, bold: true, charSpacing: 6, color: SOFT })
@@ -125,15 +122,12 @@ function buildDeck(data, sources, photoCredits) {
         slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 0.25, h: 7.5, fill: { color: ACCENT } })
         const hasImg = s._img && s._img.data
         const textW = hasImg ? 6.6 : 11.8
-
         slide.addText(String(s.heading || ""), { x: 0.9, y: 0.7, w: textW, h: 1, fontFace: "Georgia", fontSize: 30, bold: true, color: INK })
-
         const bullets = Array.isArray(s.bullets) ? s.bullets : []
         slide.addText(
             bullets.map((b) => ({ text: String(b), options: { bullet: { code: "2022", indent: 16 }, color: INK } })),
             { x: 0.9, y: 2.0, w: textW, h: 4.4, fontFace: "Arial", fontSize: 18, lineSpacingMultiple: 1.3, valign: "top" }
         )
-
         if (hasImg) {
             slide.addImage({ data: s._img.data, x: 7.9, y: 1.5, w: 4.8, h: 3.6, rounding: true })
             if (s._img.credit) {
@@ -143,11 +137,9 @@ function buildDeck(data, sources, photoCredits) {
         slide.addText(String(i + 2), { x: 12.4, y: 6.95, w: 0.6, h: 0.3, fontFace: "Arial", fontSize: 10, color: SOFT, align: "right" })
     })
 
-    // Sources & credits slide
     const src = pptx.addSlide({ masterName: "CHACEVIA" })
     src.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 0.25, h: 7.5, fill: { color: ACCENT } })
     src.addText("Sources & Credits", { x: 0.9, y: 0.7, w: 11.5, h: 0.9, fontFace: "Georgia", fontSize: 30, bold: true, color: INK })
-
     const lines = []
     sources.forEach((s, i) => lines.push("[" + (i + 1) + "]  " + s.title + " — " + s.url))
     if (photoCredits.length) {
@@ -155,7 +147,6 @@ function buildDeck(data, sources, photoCredits) {
         lines.push("Photos via Unsplash: " + photoCredits.join(", "))
     }
     if (!lines.length) lines.push("No external sources were used.")
-
     src.addText(lines.join("\n"), { x: 0.9, y: 1.8, w: 11.8, h: 5, fontFace: "Arial", fontSize: 12, color: SOFT, lineSpacingMultiple: 1.25, valign: "top" })
 
     return pptx.write({ outputType: "base64" })
@@ -184,58 +175,45 @@ export default async function handler(req, res) {
     try {
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
         const model = process.env.OPENAI_MODEL || DEFAULT_MODEL
+        const ask = `Research and build a speech presentation on this topic, using reputable sources (.gov, .edu, peer-reviewed, major news, established organizations): "${input}".`
 
-        // 1) Research with web search (with graceful fallback if unavailable)
-        let researchText = ""
+        // ONE combined call: research with web search + return the deck JSON.
+        let resp
         let sources = []
         try {
-            const research = await openai.responses.create({
+            resp = await openai.responses.create({
                 model,
                 tools: [{ type: "web_search" }],
-                input:
-                    `Research this speech/presentation topic from high-quality, reputable sources (.gov, .edu, peer-reviewed, major news, established organizations): "${input}". ` +
-                    `Summarize the key facts, statistics, dates, and context a student needs to give a compelling, well-supported speech.`,
+                instructions: SPEECH_INSTRUCTIONS,
+                input: ask,
             })
-            researchText = research.output_text || ""
-            sources = extractSources(research)
+            sources = extractSources(resp)
         } catch (e) {
-            const fallback = await openai.responses.create({
-                model,
-                input: `Summarize the key facts and context a student needs for a speech on: "${input}".`,
-            })
-            researchText = fallback.output_text || ""
+            // Fallback: no web tool (still builds, just without live citations).
+            resp = await openai.responses.create({ model, instructions: SPEECH_INSTRUCTIONS, input: ask })
             sources = []
         }
 
-        // 2) Structure it like a speech (clean JSON, with [n] citations)
-        const sourcesList = sources.length
-            ? sources.map((s, i) => "[" + (i + 1) + "] " + s.title + " (" + s.url + ")").join("\n")
-            : "(no numbered sources available — do not use [n] markers)"
+        const data = parseDeckJson(resp.output_text)
 
-        const deckResp = await openai.responses.create({
-            model,
-            instructions: SPEECH_INSTRUCTIONS,
-            input: `Topic: ${input}\n\nResearched facts:\n${researchText}\n\nNumbered sources (cite with [n]):\n${sourcesList}`,
-        })
-        const data = parseDeckJson(deckResp.output_text)
-
-        // 3) Pull Unsplash photos (bounded to keep it fast)
+        // Photos: download in parallel, capped and size-limited.
         const photoCredits = []
         const key = process.env.UNSPLASH_ACCESS_KEY
         if (key && Array.isArray(data.slides)) {
-            const limit = Math.min(data.slides.length, 6)
-            for (let i = 0; i < limit; i++) {
-                const q = data.slides[i].imageQuery
-                if (!q) continue
-                const img = await fetchUnsplash(q, key)
+            const idxs = []
+            for (let i = 0; i < data.slides.length && idxs.length < MAX_PHOTOS; i++) {
+                if (data.slides[i].imageQuery) idxs.push(i)
+            }
+            const imgs = await Promise.all(idxs.map((i) => fetchUnsplash(data.slides[i].imageQuery, key)))
+            idxs.forEach((i, k) => {
+                const img = imgs[k]
                 if (img) {
                     data.slides[i]._img = img
                     if (photoCredits.indexOf(img.credit) === -1) photoCredits.push(img.credit)
                 }
-            }
+            })
         }
 
-        // 4) Build the file
         const base64 = await buildDeck(data, sources, photoCredits)
         const fileName =
             (data.deckTitle || "chacevia-speech").toString().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") + ".pptx"
