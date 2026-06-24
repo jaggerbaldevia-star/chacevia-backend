@@ -107,6 +107,7 @@ async function fetchUnsplash(query, key) {
         const buf = Buffer.from(await ir.arrayBuffer())
         return {
             data: "image/jpeg;base64," + buf.toString("base64"),
+            url: imgUrl,
             credit: (photo.user && photo.user.name) || "Unsplash",
         }
     } catch (e) {
@@ -327,7 +328,40 @@ export default async function handler(req, res) {
             movement: String(s.movement || ""),
         }))
 
-        return res.status(200).json({ file: base64, fileName, deckTitle: String(data.deckTitle || ""), cards })
+        // Lightweight preview that mirrors the deck's layouts (uses photo URLs, not base64).
+        const n = Array.isArray(data.slides) ? data.slides.length : 0
+        const layoutFor = (i, s) => {
+            if (i === n - 1) return "closing"
+            if (s.stat) return "stat"
+            if (!s._img) return "statement"
+            if (i % 2 === 1) return "split"
+            return "fullbleed"
+        }
+        const preview = {
+            cover: {
+                image: coverImg ? coverImg.url : null,
+                deckTitle: String(data.deckTitle || ""),
+                subtitle: String(data.subtitle || ""),
+                credit: coverImg ? coverImg.credit : "",
+            },
+            slides: (Array.isArray(data.slides) ? data.slides : []).map((s, i) => {
+                const layout = layoutFor(i, s)
+                const img = s._img || (layout === "closing" ? coverImg : null)
+                return {
+                    layout,
+                    kicker: String(s.kicker || ""),
+                    heading: String(s.heading || ""),
+                    bullets: Array.isArray(s.bullets) ? s.bullets.map(String) : [],
+                    stat: String(s.stat || ""),
+                    statLabel: String(s.statLabel || ""),
+                    image: img ? img.url : null,
+                    credit: img ? img.credit : "",
+                    imageLeft: layout === "split" ? i % 4 === 1 : false,
+                }
+            }),
+        }
+
+        return res.status(200).json({ file: base64, fileName, deckTitle: String(data.deckTitle || ""), cards, preview })
     } catch (err) {
         console.error("Chacevia research-deck error:", err)
         return res.status(500).json({ error: "Something went wrong building the presentation. Please try again." })
