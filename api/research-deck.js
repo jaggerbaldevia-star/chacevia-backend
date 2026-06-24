@@ -42,7 +42,9 @@ Research the topic using the web, then design a striking, gallery-quality speech
       "imageQuery": "1-3 words for a fitting photo",
       "stat": "optional single striking figure, e.g. 70% or 1 in 3",
       "statLabel": "optional 4-8 word caption for the stat",
-      "notes": "one sentence the speaker can say"
+      "notes": "one sentence the speaker can say out loud",
+      "delivery": "one short delivery tip: a hand gesture or eye-contact cue",
+      "movement": "optional short stage-movement cue, or empty string"
     }
   ]
 }
@@ -53,6 +55,8 @@ Rules:
 - Put "stat"/"statLabel" on EXACTLY ONE evidence slide, where a single number lands hardest. Omit them on the others.
 - "imageQuery"/"coverQuery": evocative real-world photography (no charts, no text in image).
 - "kicker": a short label in caps (e.g., "THE PROBLEM", "WHY IT MATTERS", "THE ASK").
+- "delivery": always a concrete, specific coaching tip under 14 words (e.g., "Open your palms on 'together'; hold one person's eyes per point").
+- "movement": include only when it genuinely helps (e.g., "Step toward the audience on the call to action"); otherwise an empty string "".
 - Accurate, intelligent, persuasive. No filler, no cheesy language.`
 
 function extractSources(resp) {
@@ -312,7 +316,18 @@ export default async function handler(req, res) {
         const fileName =
             (data.deckTitle || "chacevia-speech").toString().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") + ".pptx"
 
-        return res.status(200).json({ file: base64, fileName })
+        // Presenter coaching cards — one per slide, for the "help me present" feature.
+        const cards = (Array.isArray(data.slides) ? data.slides : []).map((s, i) => ({
+            n: i + 1,
+            title: String(s.heading || ""),
+            subtitle: String(s.kicker || ""),
+            points: Array.isArray(s.bullets) ? s.bullets.map(String) : [],
+            say: String(s.notes || ""),
+            delivery: String(s.delivery || ""),
+            movement: String(s.movement || ""),
+        }))
+
+        return res.status(200).json({ file: base64, fileName, deckTitle: String(data.deckTitle || ""), cards })
     } catch (err) {
         console.error("Chacevia research-deck error:", err)
         return res.status(500).json({ error: "Something went wrong building the presentation. Please try again." })
