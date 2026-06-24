@@ -2,10 +2,11 @@
   "name": "chacevia-backend",
   "version": "1.0.0",
   "private": true,
-  "description": "Vercel serverless backend that powers Chacevia's AI creative director endpoint.",
+  "description": "Vercel serverless backend powering Chacevia (creative AI, research decks, presenter notes).",
   "type": "module",
   "dependencies": {
     "openai": "^6.0.0",
+    "pdf-lib": "^1.17.1",
     "pptxgenjs": "^4.0.1"
   }
 }
