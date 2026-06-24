@@ -28,22 +28,32 @@ function setCorsHeaders(res) {
 
 const SPEECH_INSTRUCTIONS = `You are Chacevia's speech & presentation director for students.
 
-Research the topic using the web, then build a compelling, well-supported speech presentation. Return ONLY valid JSON — no markdown, no backticks, no commentary — matching exactly:
+Research the topic using the web, then design a striking, gallery-quality speech presentation. Return ONLY valid JSON — no markdown, no backticks, no commentary — matching exactly:
 
 {
-  "deckTitle": "Striking title (max 7 words)",
+  "deckTitle": "Bold title (max 6 words)",
   "subtitle": "One-line thesis",
+  "coverQuery": "1-3 words for a dramatic cover photo",
   "slides": [
-    { "heading": "Slide heading (max 6 words)", "bullets": ["short point", "short point", "short point"], "imageQuery": "1-3 words for a fitting photo", "notes": "one sentence the speaker can say" }
+    {
+      "kicker": "2-3 word label, e.g. THE PROBLEM",
+      "heading": "Punchy heading (max 5 words)",
+      "bullets": ["tight point under 10 words", "tight point under 10 words"],
+      "imageQuery": "1-3 words for a fitting photo",
+      "stat": "optional single striking figure, e.g. 70% or 1 in 3",
+      "statLabel": "optional 4-8 word caption for the stat",
+      "notes": "one sentence the speaker can say"
+    }
   ]
 }
 
 Rules:
 - Exactly 6 slides, ordered like a speech: a hook, the thesis, three evidence points grounded in real facts/statistics you found, and a closing call to action.
-- 3 to 4 bullets per slide, each under 14 words, concrete and accurate.
-- "imageQuery": 1-3 words describing a premium, evocative, relevant photo (real-world imagery, not text/charts).
-- "notes": a natural sentence the student could say out loud.
-- No filler, no cheesy language. Clear, intelligent, persuasive.`
+- 2 to 3 bullets per slide, each under 10 words (they overlay photography, so keep them short and punchy).
+- Put "stat"/"statLabel" on EXACTLY ONE evidence slide, where a single number lands hardest. Omit them on the others.
+- "imageQuery"/"coverQuery": evocative real-world photography (no charts, no text in image).
+- "kicker": a short label in caps (e.g., "THE PROBLEM", "WHY IT MATTERS", "THE ASK").
+- Accurate, intelligent, persuasive. No filler, no cheesy language.`
 
 function extractSources(resp) {
     const out = []
@@ -100,57 +110,139 @@ async function fetchUnsplash(query, key) {
     }
 }
 
-function buildDeck(data, sources, photoCredits) {
-    const BG = "0F0E0D"
-    const INK = "F6F1EA"
-    const SOFT = "9A938B"
-    const ACCENT = "FFFFFF"
+// ---- Art direction tokens ----
+const BG = "0E0D0C"
+const INK = "F7F3EC"
+const SOFT = "B7B0A6"
+const SCRIM = "0B0A09"
+const SERIF = "Georgia"
+const SANS = "Arial"
+const W = 13.333
+const H = 7.5
+const TSHADOW = { type: "outer", color: "000000", blur: 5, offset: 2, angle: 90, opacity: 0.55 }
 
+function rect(pptx, slide, x, y, w, h, color, transparency) {
+    slide.addShape(pptx.ShapeType.rect, { x, y, w, h, fill: { color, transparency }, line: { type: "none" } })
+}
+function cover(slide, img) {
+    slide.addImage({ data: img.data, x: 0, y: 0, w: W, h: H, sizing: { type: "cover", w: W, h: H } })
+}
+function credit(slide, img, x, y) {
+    if (img && img.credit) {
+        slide.addText("Photo: " + img.credit + " / Unsplash", { x, y, w: 4, h: 0.3, fontFace: SANS, fontSize: 8.5, color: "FFFFFF", transparency: 25, align: "left" })
+    }
+}
+function wordmark(slide, x, y, color) {
+    slide.addText("CHACEVIA", { x, y, w: 5, h: 0.4, fontFace: SANS, fontSize: 11, bold: true, charSpacing: 6, color: color || INK })
+}
+function kickerHead(slide, x, y, w, s, headSize, white) {
+    const col = white ? INK : INK
+    if (s.kicker) slide.addText(String(s.kicker).toUpperCase(), { x, y, w, h: 0.4, fontFace: SANS, fontSize: 12.5, bold: true, charSpacing: 3, color: col, transparency: 15, shadow: white ? TSHADOW : undefined })
+    slide.addText(String(s.heading || ""), { x, y: y + 0.45, w, h: 1.4, fontFace: SERIF, fontSize: headSize, bold: true, color: INK, shadow: white ? TSHADOW : undefined, lineSpacingMultiple: 1.0 })
+}
+function bulletsBox(slide, x, y, w, h, bullets, size, white) {
+    if (!bullets.length) return
+    slide.addText(
+        bullets.map((b) => ({ text: String(b), options: { bullet: { code: "2022", indent: 14 } } })),
+        { x, y, w, h, fontFace: SANS, fontSize: size, color: INK, lineSpacingMultiple: 1.28, valign: "top", shadow: white ? TSHADOW : undefined }
+    )
+}
+
+function buildDeck(data, sources, photoCredits, coverImg) {
     const pptx = new pptxgen()
     pptx.layout = "LAYOUT_WIDE"
     pptx.defineSlideMaster({ title: "CHACEVIA", background: { color: BG } })
+    const add = () => pptx.addSlide({ masterName: "CHACEVIA" })
 
-    const title = pptx.addSlide({ masterName: "CHACEVIA" })
-    title.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 0.25, h: 7.5, fill: { color: ACCENT } })
-    title.addText("CHACEVIA", { x: 0.9, y: 0.7, w: 11, h: 0.4, fontFace: "Arial", fontSize: 12, bold: true, charSpacing: 6, color: SOFT })
-    title.addText(String(data.deckTitle || "Presentation"), { x: 0.9, y: 2.6, w: 11.5, h: 2, fontFace: "Georgia", fontSize: 46, bold: true, color: INK })
-    title.addText(String(data.subtitle || ""), { x: 0.9, y: 4.6, w: 11, h: 1, fontFace: "Arial", fontSize: 18, color: SOFT })
+    // ---------- COVER ----------
+    const c = add()
+    if (coverImg) {
+        cover(c, coverImg)
+        rect(pptx, c, 0, 0, W, H, SCRIM, 38)
+        rect(pptx, c, 0, 3.6, W, 3.9, SCRIM, 12)
+        credit(c, coverImg, 0.9, 7.05)
+    }
+    wordmark(c, 0.9, 0.7, INK)
+    rect(pptx, c, 0.92, 4.5, 0.7, 0.05, "FFFFFF", 20)
+    c.addText(String(data.deckTitle || "Presentation"), { x: 0.9, y: 4.7, w: 11.4, h: 2, fontFace: SERIF, fontSize: 54, bold: true, color: INK, shadow: coverImg ? TSHADOW : undefined, lineSpacingMultiple: 1.0 })
+    c.addText(String(data.subtitle || ""), { x: 0.92, y: 6.5, w: 11, h: 0.7, fontFace: SANS, fontSize: 18, color: INK, transparency: 10, shadow: coverImg ? TSHADOW : undefined })
 
+    // ---------- CONTENT ----------
     const slides = Array.isArray(data.slides) ? data.slides : []
     slides.forEach((s, i) => {
-        const slide = pptx.addSlide({ masterName: "CHACEVIA" })
-        slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 0.25, h: 7.5, fill: { color: ACCENT } })
-        const hasImg = s._img && s._img.data
-        const textW = hasImg ? 6.6 : 11.8
-        slide.addText(String(s.heading || ""), { x: 0.9, y: 0.7, w: textW, h: 1, fontFace: "Georgia", fontSize: 30, bold: true, color: INK })
+        const slide = add()
+        const img = s._img && s._img.data ? s._img : null
         const bullets = Array.isArray(s.bullets) ? s.bullets : []
-        slide.addText(
-            bullets.map((b) => ({ text: String(b), options: { bullet: { code: "2022", indent: 16 }, color: INK } })),
-            { x: 0.9, y: 2.0, w: textW, h: 4.4, fontFace: "Arial", fontSize: 18, lineSpacingMultiple: 1.3, valign: "top" }
-        )
-        if (hasImg) {
-            slide.addImage({ data: s._img.data, x: 7.9, y: 1.5, w: 4.8, h: 3.6, rounding: true })
-            if (s._img.credit) {
-                slide.addText("Photo: " + s._img.credit + " / Unsplash", { x: 7.9, y: 5.15, w: 4.8, h: 0.3, fontFace: "Arial", fontSize: 9, color: SOFT, align: "right" })
-            }
+        const isLast = i === slides.length - 1
+        const num = String(i + 2).padStart(2, "0")
+
+        if (isLast) {
+            // ---- CLOSING (full-bleed, centered) ----
+            const bg = img || coverImg
+            if (bg) { cover(slide, bg); rect(pptx, slide, 0, 0, W, H, SCRIM, 30); credit(slide, bg, 0.9, 7.05) }
+            if (s.kicker) slide.addText(String(s.kicker).toUpperCase(), { x: 1, y: 2.5, w: 11.33, h: 0.5, align: "center", fontFace: SANS, fontSize: 13, bold: true, charSpacing: 4, color: INK, transparency: 10, shadow: bg ? TSHADOW : undefined })
+            slide.addText(String(s.heading || ""), { x: 1, y: 3.0, w: 11.33, h: 1.8, align: "center", fontFace: SERIF, fontSize: 48, bold: true, color: INK, shadow: bg ? TSHADOW : undefined })
+            if (bullets[0]) slide.addText(String(bullets[0]), { x: 2, y: 4.8, w: 9.33, h: 0.8, align: "center", fontFace: SANS, fontSize: 18, color: INK, transparency: 8, shadow: bg ? TSHADOW : undefined })
+            return
         }
-        slide.addText(String(i + 2), { x: 12.4, y: 6.95, w: 0.6, h: 0.3, fontFace: "Arial", fontSize: 10, color: SOFT, align: "right" })
+
+        if (s.stat) {
+            // ---- BIG STAT ----
+            if (img) { cover(slide, img); rect(pptx, slide, 0, 0, W, H, SCRIM, 20); credit(slide, img, 0.9, 7.05) }
+            if (s.kicker) slide.addText(String(s.kicker).toUpperCase(), { x: 0.9, y: 1.2, w: 11, h: 0.5, fontFace: SANS, fontSize: 13, bold: true, charSpacing: 4, color: INK, transparency: 12, shadow: img ? TSHADOW : undefined })
+            slide.addText(String(s.stat), { x: 0.85, y: 2.0, w: 11.5, h: 2.6, fontFace: SERIF, fontSize: 150, bold: true, color: INK, shadow: img ? TSHADOW : undefined })
+            slide.addText(String(s.statLabel || s.heading || ""), { x: 0.95, y: 4.9, w: 9, h: 1, fontFace: SANS, fontSize: 22, color: INK, transparency: 6, shadow: img ? TSHADOW : undefined })
+            slide.addText(num, { x: 12.4, y: 6.95, w: 0.6, h: 0.3, fontFace: SANS, fontSize: 10, color: INK, transparency: 30, align: "right" })
+            return
+        }
+
+        if (!img) {
+            // ---- DARK STATEMENT (no photo) ----
+            rect(pptx, slide, 0.9, 1.3, 0.7, 0.05, "FFFFFF", 25)
+            kickerHead(slide, 0.9, 1.6, 11.4, s, 46, false)
+            bulletsBox(slide, 0.95, 4.4, 10.5, 2.6, bullets, 20, false)
+            slide.addText(num, { x: 12.4, y: 6.95, w: 0.6, h: 0.3, fontFace: SANS, fontSize: 10, color: SOFT, align: "right" })
+            return
+        }
+
+        if (i % 2 === 1) {
+            // ---- SPLIT (image one side, text the other) ----
+            const imageLeft = i % 4 === 1
+            const ix = imageLeft ? 0 : 7.0
+            const tx = imageLeft ? 7.0 : 0.9
+            slide.addImage({ data: img.data, x: ix, y: 0, w: 6.33, h: H, sizing: { type: "cover", w: 6.33, h: H } })
+            rect(pptx, slide, ix, 0, 6.33, H, SCRIM, 55)
+            kickerHead(slide, tx, 1.5, 5.4, s, 32, false)
+            bulletsBox(slide, tx + 0.03, 3.7, 5.3, 3, bullets, 17, false)
+            credit(slide, img, ix + 0.3, 7.05)
+            slide.addText(num, { x: imageLeft ? 12.4 : 6.0, y: 6.95, w: 0.6, h: 0.3, fontFace: SANS, fontSize: 10, color: SOFT, align: "right" })
+            return
+        }
+
+        // ---- FULL-BLEED (image + overlaid text, bottom-anchored) ----
+        cover(slide, img)
+        rect(pptx, slide, 0, 0, W, H, SCRIM, 42)
+        rect(pptx, slide, 0, 3.4, W, 4.1, SCRIM, 14)
+        kickerHead(slide, 0.9, 3.7, 11.4, s, 40, true)
+        bulletsBox(slide, 0.95, 5.7, 8.5, 1.6, bullets, 17, true)
+        credit(slide, img, 0.9, 7.08)
+        slide.addText(num, { x: 12.4, y: 0.6, w: 0.6, h: 0.3, fontFace: SANS, fontSize: 10, color: INK, transparency: 25, align: "right" })
     })
 
-    const src = pptx.addSlide({ masterName: "CHACEVIA" })
-    src.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 0.25, h: 7.5, fill: { color: ACCENT } })
-    src.addText("Sources & Credits", { x: 0.9, y: 0.7, w: 11.5, h: 0.9, fontFace: "Georgia", fontSize: 30, bold: true, color: INK })
+    // ---------- SOURCES ----------
+    const src = add()
+    rect(pptx, src, 0, 0, 0.18, H, "FFFFFF", 0)
+    src.addText("Sources & Credits", { x: 0.9, y: 0.8, w: 11.5, h: 0.9, fontFace: SERIF, fontSize: 30, bold: true, color: INK })
     const lines = []
     sources.forEach((s, i) => lines.push("[" + (i + 1) + "]  " + s.title + " — " + s.url))
-    if (photoCredits.length) {
-        lines.push("")
-        lines.push("Photos via Unsplash: " + photoCredits.join(", "))
-    }
+    if (photoCredits.length) { lines.push(""); lines.push("Photography via Unsplash: " + photoCredits.join(", ")) }
     if (!lines.length) lines.push("No external sources were used.")
-    src.addText(lines.join("\n"), { x: 0.9, y: 1.8, w: 11.8, h: 5, fontFace: "Arial", fontSize: 12, color: SOFT, lineSpacingMultiple: 1.25, valign: "top" })
+    src.addText(lines.join("\n"), { x: 0.9, y: 2.0, w: 11.8, h: 5, fontFace: SANS, fontSize: 12, color: SOFT, lineSpacingMultiple: 1.3, valign: "top" })
 
     return pptx.write({ outputType: "base64" })
 }
+
+export { buildDeck }
 
 export default async function handler(req, res) {
     setCorsHeaders(res)
@@ -196,25 +288,27 @@ export default async function handler(req, res) {
 
         const data = parseDeckJson(resp.output_text)
 
-        // Photos: download in parallel, capped and size-limited.
+        // Photos: download cover + slide images in parallel, capped and size-limited.
         const photoCredits = []
+        let coverImg = null
         const key = process.env.UNSPLASH_ACCESS_KEY
         if (key && Array.isArray(data.slides)) {
-            const idxs = []
-            for (let i = 0; i < data.slides.length && idxs.length < MAX_PHOTOS; i++) {
-                if (data.slides[i].imageQuery) idxs.push(i)
+            const jobs = []
+            jobs.push({ key: "cover", q: data.coverQuery || (data.slides[0] && data.slides[0].imageQuery) || data.deckTitle })
+            for (let i = 0; i < data.slides.length && jobs.length <= MAX_PHOTOS; i++) {
+                if (data.slides[i].imageQuery) jobs.push({ key: i, q: data.slides[i].imageQuery })
             }
-            const imgs = await Promise.all(idxs.map((i) => fetchUnsplash(data.slides[i].imageQuery, key)))
-            idxs.forEach((i, k) => {
-                const img = imgs[k]
-                if (img) {
-                    data.slides[i]._img = img
-                    if (photoCredits.indexOf(img.credit) === -1) photoCredits.push(img.credit)
-                }
+            const imgs = await Promise.all(jobs.map((j) => fetchUnsplash(j.q, key)))
+            imgs.forEach((img, n) => {
+                if (!img) return
+                const j = jobs[n]
+                if (j.key === "cover") coverImg = img
+                else data.slides[j.key]._img = img
+                if (photoCredits.indexOf(img.credit) === -1) photoCredits.push(img.credit)
             })
         }
 
-        const base64 = await buildDeck(data, sources, photoCredits)
+        const base64 = await buildDeck(data, sources, photoCredits, coverImg)
         const fileName =
             (data.deckTitle || "chacevia-speech").toString().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") + ".pptx"
 
