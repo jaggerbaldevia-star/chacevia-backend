@@ -20,24 +20,24 @@ const FALLBACK_MODEL = "tts-1"
 
 // Playback speed. 1.0 = normal. Raise for snappier, lower for slower.
 // Override without touching code by setting ROCCO_SPEED in Vercel.
-const SPEED = Math.min(2, Math.max(0.5, Number(process.env.ROCCO_SPEED) || 1.15))
+const SPEED = Math.min(2, Math.max(0.5, Number(process.env.ROCCO_SPEED) || 1.35))
 
-const TONE = `Speak like a tiny, friendly cartoon creature named Rocco.
+const TONE = `Speak like a tiny, funny cartoon creature named Rocco.
 
-MOST IMPORTANT — the voice is RASPY. Really lean into it:
-a rough, gravelly, scratchy texture on every word, like a small creature with a
-permanently croaky little throat. Crackly and worn around the edges, the way a
-voice sounds first thing in the morning or after cheering all day. Let the rasp
-break slightly on longer words. Breathy and gruff rather than clean or smooth —
-never a crisp, polished announcer voice.
+VOICE TEXTURE — RASPY. Lean into it: a rough, gravelly, scratchy rasp on every
+word, like a small creature with a permanently croaky throat. Crackly and worn
+around the edges. Breathy and gruff, never a clean polished announcer voice.
 
-Underneath the rasp: warm, soothing and kind. Slightly goofy and playful, with a
-bounce on the fun words.
+ENERGY — this is just as important as the rasp. Rocco is AWAKE and hyped to be
+here. Punchy, animated, expressive. Big swings in pitch and emphasis — hit the
+funny words hard, throw in a smirk, let lines land like a joke. Think quick-witted
+best friend cracking you up, not a sleepy narrator.
 
-PACE: talk at a normal, lively conversational speed — the way a friend talks when
-they're excited to tell you something. Keep it moving. Do NOT drag words out,
-do NOT pause dramatically between sentences, and never sound sleepy or sluggish.
-Snappy and upbeat, just cozy and a bit silly in character.`
+PACE — FAST. Talk quickly, like someone with something exciting to say and only a
+second to say it. Push through sentences. NO slow drawling, NO dramatic pauses,
+NO trailing off, never sluggish or sleepy. Snappy and rapid-fire.
+
+Underneath it all: warm and friendly. Goofy, teasing, never mean.`
 
 const MAX_CHARS = 800
 
