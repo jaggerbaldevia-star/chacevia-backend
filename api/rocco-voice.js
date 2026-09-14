@@ -19,10 +19,16 @@ const TTS_MODEL = process.env.ROCCO_TTS_MODEL || "gpt-4o-mini-tts"
 const FALLBACK_MODEL = "tts-1"
 
 const TONE = `Speak like a tiny, friendly cartoon creature named Rocco.
-Voice: a little scratchy and raspy, warm and soothing underneath, and slightly goofy —
-like a well-loved stuffed animal that just woke up from a nap.
-Delivery: unhurried and gentle, with playful bounce on the fun words.
-Never harsh, never rushed. Keep it cozy and a bit silly.`
+
+MOST IMPORTANT — the voice is RASPY. Really lean into it:
+a rough, gravelly, scratchy texture on every word, like a small creature with a
+permanently croaky little throat. Crackly and worn around the edges, the way a
+voice sounds first thing in the morning or after cheering all day. Let the rasp
+break slightly on longer words. Breathy and gruff rather than clean or smooth —
+never a crisp, polished announcer voice.
+
+Underneath the rasp: warm, soothing and kind. Slightly goofy and playful, with a
+bounce on the fun words. Unhurried and gentle — cozy, a bit silly, never harsh.`
 
 const MAX_CHARS = 800
 
