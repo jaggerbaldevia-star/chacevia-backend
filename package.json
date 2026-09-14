@@ -5,6 +5,7 @@
   "description": "Vercel serverless backend powering Chacevia (creative AI, research decks, presenter notes).",
   "type": "module",
   "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
     "openai": "^6.0.0",
     "pdf-lib": "^1.17.1",
     "pptxgenjs": "^4.0.1"
