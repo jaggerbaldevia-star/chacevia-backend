@@ -18,6 +18,10 @@ const VOICE = process.env.ROCCO_VOICE || "ash"
 const TTS_MODEL = process.env.ROCCO_TTS_MODEL || "gpt-4o-mini-tts"
 const FALLBACK_MODEL = "tts-1"
 
+// Playback speed. 1.0 = normal. Raise for snappier, lower for slower.
+// Override without touching code by setting ROCCO_SPEED in Vercel.
+const SPEED = Math.min(2, Math.max(0.5, Number(process.env.ROCCO_SPEED) || 1.15))
+
 const TONE = `Speak like a tiny, friendly cartoon creature named Rocco.
 
 MOST IMPORTANT — the voice is RASPY. Really lean into it:
@@ -28,7 +32,12 @@ break slightly on longer words. Breathy and gruff rather than clean or smooth �
 never a crisp, polished announcer voice.
 
 Underneath the rasp: warm, soothing and kind. Slightly goofy and playful, with a
-bounce on the fun words. Unhurried and gentle — cozy, a bit silly, never harsh.`
+bounce on the fun words.
+
+PACE: talk at a normal, lively conversational speed — the way a friend talks when
+they're excited to tell you something. Keep it moving. Do NOT drag words out,
+do NOT pause dramatically between sentences, and never sound sleepy or sluggish.
+Snappy and upbeat, just cozy and a bit silly in character.`
 
 const MAX_CHARS = 800
 
@@ -63,6 +72,7 @@ export default async function handler(req, res) {
                 voice: VOICE,
                 input: say,
                 instructions: TONE,
+                speed: SPEED,
                 response_format: "mp3",
             })
         } catch (e) {
@@ -72,6 +82,7 @@ export default async function handler(req, res) {
                 model: FALLBACK_MODEL,
                 voice: VOICE,
                 input: say,
+                speed: SPEED,
                 response_format: "mp3",
             })
         }
