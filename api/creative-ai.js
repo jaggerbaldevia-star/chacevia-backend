@@ -13,6 +13,9 @@
 // to the browser, because this code runs on Vercel's servers, not in Framer.
 
 import OpenAI from "openai";
+import { requireCoins, chargeAfter } from "./_coins.js";
+
+const COIN_COST = 1;
 
 // --- Settings you can tweak -------------------------------------------------
 
@@ -130,6 +133,10 @@ export default async function handler(req, res) {
   }
 
   try {
+    // Require login + enough coins before doing any work.
+    const guard = await requireCoins(req, body, COIN_COST, "creative-ai");
+    if (!guard.ok) return res.status(guard.status).json(guard.payload);
+
     // Create the OpenAI client. The key is read from the environment.
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -151,8 +158,9 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: "The AI returned an empty response. Please try again." });
     }
 
-    // Success. Send the creative direction back to Framer.
-    return res.status(200).json({ output });
+    // Success. Charge the coins, then send the result + remaining balance.
+    const coins = await chargeAfter(guard);
+    return res.status(200).json({ output, coins });
   } catch (err) {
     // If anything goes wrong with the OpenAI call, log it (visible in Vercel
     // logs) and return a clean JSON error instead of crashing.

@@ -52,15 +52,23 @@ export async function spend(userId, amount) {
     return typeof data === "number" ? data : -1
 }
 
-// A single guard for endpoints: require login + enough coins BEFORE doing work.
+// A single guard for endpoints: require login + rate limit + enough coins
+// BEFORE doing work. Pass `endpoint` (e.g. "rocco-chat") to meter it.
 // Returns { ok:true, userId, balance } or { ok:false, status, payload }.
-export async function requireCoins(req, body, cost) {
+export async function requireCoins(req, body, cost, endpoint) {
     if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
         // Coins not configured yet — let the request through (no charge).
         return { ok: true, userId: null, balance: null, cost: 0, skip: true }
     }
     const userId = await getUserId(tokenFrom(req, body))
     if (!userId) return { ok: false, status: 401, payload: { error: "Please log in to use Chacevia." } }
+
+    if (endpoint) {
+        const { checkLimit } = await import("./_limits.js")
+        const limit = await checkLimit(userId, endpoint)
+        if (!limit.ok) return limit
+    }
+
     const balance = await getBalance(userId)
     if (balance < cost) return { ok: false, status: 402, payload: { error: "Not enough coins.", needCoins: true, coins: balance } }
     return { ok: true, userId, balance, cost }

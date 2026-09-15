@@ -11,6 +11,9 @@
 
 import OpenAI, { toFile } from "openai"
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib"
+import { requireCoins, chargeAfter } from "./_coins.js"
+
+const COIN_COST = 2
 
 export const config = { maxDuration: 60 }
 const DEFAULT_MODEL = "gpt-5.5"
@@ -145,6 +148,9 @@ export default async function handler(req, res) {
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "Server is missing OPENAI_API_KEY." })
 
     try {
+        const guard = await requireCoins(req, body, COIN_COST, "voice-notes")
+        if (!guard.ok) return res.status(guard.status).json(guard.payload)
+
         const clean = audioB64.replace(/^data:[^;]+;base64,/, "")
         const buffer = Buffer.from(clean, "base64")
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
@@ -161,7 +167,7 @@ export default async function handler(req, res) {
             return res.status(502).json({ error: "Couldn't transcribe that audio. Make sure it's a voice memo (.m4a, .mp3, .wav) and not too long." })
         }
         if (!transcript.trim()) {
-            return res.status(200).json({ empty: true, error: "I couldn't hear any speech in that recording." })
+            return res.status(200).json({ empty: true, error: "I couldn't hear any speech in that recording.", coins: guard.balance })
         }
 
         // 2) Structure into notes
@@ -179,6 +185,7 @@ export default async function handler(req, res) {
         const fileB64 = await buildNotesPdf(data)
         const fileName = (data.title || "voice-notes").toString().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") + "-notes.pdf"
 
+        const coins = await chargeAfter(guard)
         return res.status(200).json({
             title: data.title || "Notes",
             summary: data.summary || "",
@@ -188,6 +195,7 @@ export default async function handler(req, res) {
             transcript,
             file: fileB64,
             fileName,
+            coins,
         })
     } catch (err) {
         console.error("voice-notes error:", err)

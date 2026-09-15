@@ -9,10 +9,11 @@
 import OpenAI, { toFile } from "openai"
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib"
 import { requireCoins, chargeAfter } from "./_coins.js"
+import { MODELS, withRetry, cacheKey, cacheGet, cacheSet } from "./_ai.js"
 
 export const config = { maxDuration: 60 }
 const COIN_COST = 4
-const DEFAULT_MODEL = "gpt-5.5"
+const DEFAULT_MODEL = MODELS.smart
 const TRANSCRIBE_MODEL = "whisper-1"
 
 function setCorsHeaders(res) {
@@ -161,7 +162,7 @@ export default async function handler(req, res) {
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "Server is missing OPENAI_API_KEY." })
 
     try {
-        const guard = await requireCoins(req, body, COIN_COST)
+        const guard = await requireCoins(req, body, COIN_COST, "study-set")
         if (!guard.ok) return res.status(guard.status).json(guard.payload)
 
         const clean = audioB64.replace(/^data:[^;]+;base64,/, "")
@@ -173,7 +174,7 @@ export default async function handler(req, res) {
         let transcript = ""
         try {
             const file = await toFile(buffer, filename)
-            const tr = await openai.audio.transcriptions.create({ file, model: TRANSCRIBE_MODEL })
+            const tr = await withRetry(() => openai.audio.transcriptions.create({ file, model: TRANSCRIBE_MODEL }), { label: "study-transcribe" })
             transcript = (tr && tr.text) || ""
         } catch (e) {
             console.error("transcription error:", e)
@@ -184,11 +185,22 @@ export default async function handler(req, res) {
         }
 
         // 2) Build the full study kit in one pass
-        const resp = await openai.responses.create({
-            model,
-            instructions: INSTRUCTIONS,
-            input: "Transcript:\n" + transcript,
-        })
+        // Same transcript already turned into a kit? Serve it instantly.
+        const ck = cacheKey("study-set", [transcript.slice(0, 4000)])
+        const cached = await cacheGet(ck)
+        if (cached) {
+            const coins = await chargeAfter(guard)
+            return res.status(200).json({ ...cached, coins, cached: true })
+        }
+
+        const resp = await withRetry(
+            () => openai.responses.create({
+                model,
+                instructions: INSTRUCTIONS,
+                input: "Transcript:\n" + transcript,
+            }),
+            { label: "study-set" }
+        )
         let data
         try { data = extractParsed(resp.output_text) } catch (e) {
             return res.status(502).json({ error: "Couldn't build the study set. Please try again." })
@@ -198,8 +210,7 @@ export default async function handler(req, res) {
         const fileB64 = await buildStudyKitPdf(data)
         const fileName = (data.title || "study-kit").toString().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) + "-study-kit.pdf"
 
-        const coins = await chargeAfter(guard)
-        return res.status(200).json({
+        const payload = {
             title: data.title || "Study set",
             summary: data.summary || "",
             sections: Array.isArray(data.sections) ? data.sections : [],
@@ -207,8 +218,10 @@ export default async function handler(req, res) {
             quiz: Array.isArray(data.quiz) ? data.quiz : [],
             file: fileB64,
             fileName,
-            coins,
-        })
+        }
+        await cacheSet(ck, "study-set", payload)
+        const coins = await chargeAfter(guard)
+        return res.status(200).json({ ...payload, coins })
     } catch (err) {
         console.error("study-set error:", err)
         return res.status(500).json({ error: "Something went wrong building that study set. Please try again." })

@@ -5,9 +5,10 @@
 
 import OpenAI from "openai"
 import { requireCoins, chargeAfter } from "./_coins.js"
+import { MODELS, withRetry, ai } from "./_ai.js"
 
 const COIN_COST = 1
-const DEFAULT_MODEL = "gpt-5.5"
+const DEFAULT_MODEL = MODELS.fast  // chat is short — fast tier keeps Rocco snappy
 
 function setCorsHeaders(res) {
     res.setHeader("Access-Control-Allow-Origin", "*")
@@ -74,17 +75,19 @@ export default async function handler(req, res) {
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "Server is missing OPENAI_API_KEY." })
 
     try {
-        const guard = await requireCoins(req, body, COIN_COST)
+        const guard = await requireCoins(req, body, COIN_COST, "rocco-chat")
         if (!guard.ok) return res.status(guard.status).json(guard.payload)
 
-        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-        const model = process.env.OPENAI_MODEL || DEFAULT_MODEL
+        const model = process.env.ROCCO_MODEL || DEFAULT_MODEL
 
-        const resp = await openai.responses.create({
-            model,
-            instructions: INSTRUCTIONS,
-            input: (userName ? "The user's name is " + userName + ".\n" : "") + "User says: " + message.trim().slice(0, 1000),
-        })
+        const resp = await withRetry(
+            () => ai().responses.create({
+                model,
+                instructions: INSTRUCTIONS,
+                input: (userName ? "The user's name is " + userName + ".\n" : "") + "User says: " + message.trim().slice(0, 1000),
+            }),
+            { label: "rocco-chat" }
+        )
         const { reply, doodle } = parseRocco(resp.output_text)
         if (!reply) return res.status(502).json({ error: "Rocco got tongue-tied. Try again!" })
 

@@ -12,9 +12,13 @@
 
 import OpenAI from "openai"
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib"
+import { requireCoins, chargeAfter } from "./_coins.js"
+import { MODELS, withRetry } from "./_ai.js"
+
+const COIN_COST = 2
 
 export const config = { maxDuration: 60 }
-const DEFAULT_MODEL = "gpt-5.5"
+const DEFAULT_MODEL = MODELS.smart
 
 function setCorsHeaders(res) {
     res.setHeader("Access-Control-Allow-Origin", "*")
@@ -163,6 +167,9 @@ export default async function handler(req, res) {
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "Server is missing OPENAI_API_KEY." })
 
     try {
+        const guard = await requireCoins(req, body, COIN_COST, "scan-answer")
+        if (!guard.ok) return res.status(guard.status).json(guard.payload)
+
         const dataUri = pdfB64.startsWith("data:") ? pdfB64 : "data:application/pdf;base64," + pdfB64
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
         const model = process.env.OPENAI_MODEL || DEFAULT_MODEL
@@ -175,14 +182,20 @@ export default async function handler(req, res) {
         let resp
         let sources = []
         try {
-            resp = await openai.responses.create({
-                model,
-                tools: [{ type: "web_search" }],
-                input: [{ role: "user", content }],
-            })
+            resp = await withRetry(
+                () => openai.responses.create({
+                    model,
+                    tools: [{ type: "web_search" }],
+                    input: [{ role: "user", content }],
+                }),
+                { label: "scan-answer" }
+            )
             sources = extractSources(resp)
         } catch (e) {
-            resp = await openai.responses.create({ model, input: [{ role: "user", content }] })
+            resp = await withRetry(
+                () => openai.responses.create({ model, input: [{ role: "user", content }] }),
+                { label: "scan-answer-fallback" }
+            )
             sources = []
         }
 
@@ -197,11 +210,12 @@ export default async function handler(req, res) {
         const items = Array.isArray(parsed.items) ? parsed.items : []
 
         if (!items.length) {
-            return res.status(200).json({ items: [], sources, message: "I couldn't find any answerable questions in that PDF." })
+            return res.status(200).json({ items: [], sources, message: "I couldn't find any answerable questions in that PDF.", coins: guard.balance })
         }
 
         const file = await buildStudySheet(items, sources)
-        return res.status(200).json({ items, sources, file, fileName: "study-sheet.pdf" })
+        const coins = await chargeAfter(guard)
+        return res.status(200).json({ items, sources, file, fileName: "study-sheet.pdf", coins })
     } catch (err) {
         console.error("scan-answer error:", err)
         return res.status(500).json({ error: "Something went wrong reading that PDF. Please try again." })

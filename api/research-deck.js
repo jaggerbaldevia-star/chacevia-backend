@@ -10,6 +10,9 @@
 
 import OpenAI from "openai"
 import { createRequire } from "module"
+import { requireCoins, chargeAfter } from "./_coins.js"
+
+const COIN_COST = 3
 const require = createRequire(import.meta.url)
 const pptxgen = require("pptxgenjs")
 
@@ -270,6 +273,9 @@ export default async function handler(req, res) {
     }
 
     try {
+        const guard = await requireCoins(req, body, COIN_COST, "research-deck")
+        if (!guard.ok) return res.status(guard.status).json(guard.payload)
+
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
         const model = process.env.OPENAI_MODEL || DEFAULT_MODEL
         const ask = `Research and build a speech presentation on this topic, using reputable sources (.gov, .edu, peer-reviewed, major news, established organizations): "${input}".`
@@ -361,7 +367,8 @@ export default async function handler(req, res) {
             }),
         }
 
-        return res.status(200).json({ file: base64, fileName, deckTitle: String(data.deckTitle || ""), cards, preview })
+        const coins = await chargeAfter(guard)
+        return res.status(200).json({ file: base64, fileName, deckTitle: String(data.deckTitle || ""), cards, preview, coins })
     } catch (err) {
         console.error("Chacevia research-deck error:", err)
         return res.status(500).json({ error: "Something went wrong building the presentation. Please try again." })
