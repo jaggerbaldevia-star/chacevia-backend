@@ -13,7 +13,7 @@ import { svc } from "./_coins.js"
 // ---- Model tiers -------------------------------------------------
 // Override per-tier in Vercel without touching code.
 export const MODELS = {
-    fast: process.env.MODEL_FAST || "gpt-5.5-mini",   // chat, short replies
+    fast: process.env.MODEL_FAST || "gpt-5.5",   // chat, short replies
     smart: process.env.MODEL_SMART || "gpt-5.5",      // research, study kits
 }
 
