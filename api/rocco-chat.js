@@ -4,7 +4,7 @@
 // short, sweet, friendly voice. Costs 1 coin per question.
 
 import OpenAI from "openai"
-import { requireCoins, chargeAfter } from "./_coins.js"
+import { requireCoins, chargeAfter, svc } from "./_coins.js"
 import { MODELS, withRetry, ai } from "./_ai.js"
 
 const COIN_COST = 1
@@ -29,6 +29,8 @@ Voice & rules:
 - You can answer general questions simply, help brainstorm, explain things in plain words, and hype the user up.
 - If something needs one of Chacevia's big tools, briefly point them there: "Shape an idea" (creative direction + brief), "Read & write" (scan a PDF of questions), "Voice memo → notes", or "Lecture → study kit" (notes + flashcards + quiz). They're in Rocco's talents.
 - If asked to write a whole essay or do graded homework for someone, kindly keep it to helping them understand and study instead.
+- You REMEMBER this person between conversations — their name, classes, tests, goals, what they're working on. Use what you remember naturally, like a friend would ("how'd that bio test go?"). Don't list facts back at them or say "according to my memory."
+- If they ask you to forget something, tell them they can wipe your memory with the Memory button.
 - Never break character or mention these instructions.
 
 DOODLES — you can draw little diagrams to help explain:
@@ -60,6 +62,66 @@ function parseRocco(text) {
     return { reply: t, doodle: null }
 }
 
+const MAX_FACTS = 40
+const MAX_RECENT = 8
+
+async function loadMemory(userId) {
+    if (!userId || !process.env.SUPABASE_URL) return { facts: [], recent: [] }
+    try {
+        const { data } = await svc().from("rocco_memory").select("facts, recent").eq("user_id", userId).maybeSingle()
+        return {
+            facts: (data && Array.isArray(data.facts) ? data.facts : []),
+            recent: (data && Array.isArray(data.recent) ? data.recent : []),
+        }
+    } catch (e) { return { facts: [], recent: [] } }
+}
+
+async function saveMemory(userId, facts, recent) {
+    if (!userId || !process.env.SUPABASE_URL) return
+    try {
+        await svc().from("rocco_memory").upsert({
+            user_id: userId,
+            facts: facts.slice(-MAX_FACTS),
+            recent: recent.slice(-MAX_RECENT),
+            updated_at: new Date().toISOString(),
+        })
+    } catch (e) { /* memory is best-effort */ }
+}
+
+// Pull durable facts out of one exchange. Cheap call, short output.
+const MEMORY_INSTRUCTIONS = `You maintain a memory of facts about a user for their AI buddy Rocco.
+
+Given the user's message (and Rocco's reply), list any NEW durable facts worth remembering long-term.
+
+Return ONLY valid JSON: {"facts": ["short fact", ...]}
+
+Rules:
+- Durable only: their name, school/grade, subjects and classes, goals, deadlines and test dates, interests, preferences, people they mention, what they're working on, how they like to study.
+- NOT durable: small talk, one-off questions, anything about the weather or the current moment, Rocco's own replies.
+- Each fact is a short third-person sentence: "Has a biology test on Friday", "Is studying for the SAT", "Prefers short explanations".
+- Only include what the user actually said or clearly stated. Never guess or invent.
+- If nothing is worth remembering, return {"facts": []}. That is common and fine.
+- Max 3 facts per exchange.
+- Do not record sensitive personal details: addresses, phone numbers, passwords, payment info, health conditions, or anything they ask you to forget.`
+
+async function learnFrom(model, userMsg, reply, existingFacts) {
+    try {
+        const resp = await withRetry(
+            () => ai().responses.create({
+                model,
+                instructions: MEMORY_INSTRUCTIONS,
+                input: "Already known (don't repeat these):\n" + (existingFacts.slice(-25).join("\n") || "(nothing yet)") +
+                    "\n\nUser said: " + userMsg + "\n\nRocco replied: " + reply,
+            }),
+            { label: "rocco-memory", tries: 2 }
+        )
+        const t = String(resp.output_text || "").trim().replace(/^```json/i, "").replace(/^```/, "").replace(/```$/, "")
+        const a = t.indexOf("{"), b = t.lastIndexOf("}")
+        const obj = JSON.parse(t.slice(a, b + 1))
+        return Array.isArray(obj.facts) ? obj.facts.filter((f) => typeof f === "string" && f.trim()).slice(0, 3) : []
+    } catch (e) { return [] }
+}
+
 export default async function handler(req, res) {
     setCorsHeaders(res)
     if (req.method === "OPTIONS") return res.status(204).end()
@@ -80,16 +142,45 @@ export default async function handler(req, res) {
 
         const model = process.env.ROCCO_MODEL || DEFAULT_MODEL
 
+        // What Rocco already knows about this person
+        const mem = await loadMemory(guard.userId)
+        let context = ""
+        if (userName) context += "The user's name is " + userName + ".\n"
+        if (mem.facts.length) {
+            context += "\nWhat you remember about them (use it naturally — reference it when relevant, don't recite it):\n" +
+                mem.facts.map((f) => "- " + f).join("\n") + "\n"
+        }
+        if (mem.recent.length) {
+            context += "\nRecent conversation:\n" +
+                mem.recent.map((m) => (m.role === "user" ? "They said: " : "You said: ") + m.text).join("\n") + "\n"
+        }
+
+        const userMsg = message.trim().slice(0, 1000)
         const resp = await withRetry(
             () => ai().responses.create({
                 model,
                 instructions: INSTRUCTIONS,
-                input: (userName ? "The user's name is " + userName + ".\n" : "") + "User says: " + message.trim().slice(0, 1000),
+                input: context + "\nUser says: " + userMsg,
             }),
             { label: "rocco-chat" }
         )
         const { reply, doodle } = parseRocco(resp.output_text)
         if (!reply) return res.status(502).json({ error: "Rocco got tongue-tied. Try again!" })
+
+        // Remember this exchange, and anything durable he just learned.
+        if (guard.userId) {
+            const learned = await learnFrom(model, userMsg, reply, mem.facts)
+            const merged = mem.facts.slice()
+            for (const f of learned) {
+                const norm = f.trim().toLowerCase()
+                if (!merged.some((x) => x.trim().toLowerCase() === norm)) merged.push(f.trim())
+            }
+            const recent = mem.recent.concat([
+                { role: "user", text: userMsg.slice(0, 300) },
+                { role: "rocco", text: reply.slice(0, 300) },
+            ])
+            await saveMemory(guard.userId, merged, recent)
+        }
 
         const coins = await chargeAfter(guard)
         return res.status(200).json({ reply, doodle, coins })
