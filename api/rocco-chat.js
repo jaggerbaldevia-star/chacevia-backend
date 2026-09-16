@@ -65,6 +65,14 @@ function parseRocco(text) {
 const MAX_FACTS = 40
 const MAX_RECENT = 8
 
+async function loadProfile(userId) {
+    if (!userId || !process.env.SUPABASE_URL) return null
+    try {
+        const { data } = await svc().from("rocco_profile").select("display_name, from_place, age, background").eq("user_id", userId).maybeSingle()
+        return data || null
+    } catch (e) { return null }
+}
+
 async function loadMemory(userId) {
     if (!userId || !process.env.SUPABASE_URL) return { facts: [], recent: [] }
     try {
@@ -143,9 +151,17 @@ export default async function handler(req, res) {
         const model = process.env.ROCCO_MODEL || DEFAULT_MODEL
 
         // What Rocco already knows about this person
-        const mem = await loadMemory(guard.userId)
+        const [mem, prof] = await Promise.all([loadMemory(guard.userId), loadProfile(guard.userId)])
         let context = ""
         if (userName) context += "The user's name is " + userName + ".\n"
+        if (prof) {
+            const bits = []
+            if (prof.display_name) bits.push("goes by " + prof.display_name)
+            if (prof.from_place) bits.push("from " + prof.from_place)
+            if (prof.age) bits.push("age " + prof.age)
+            if (prof.background && !/prefer not/i.test(prof.background)) bits.push("background: " + prof.background)
+            if (bits.length) context += "About them: " + bits.join(", ") + ". Use this to pitch things at the right level; never bring up their background unless they do.\n"
+        }
         if (mem.facts.length) {
             context += "\nWhat you remember about them (use it naturally — reference it when relevant, don't recite it):\n" +
                 mem.facts.map((f) => "- " + f).join("\n") + "\n"
