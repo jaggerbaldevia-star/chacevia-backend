@@ -37,7 +37,10 @@ PACE — FAST. Talk quickly, like someone with something exciting to say and onl
 second to say it. Push through sentences. NO slow drawling, NO dramatic pauses,
 NO trailing off, never sluggish or sleepy. Snappy and rapid-fire.
 
-Underneath it all: warm and friendly. Goofy, teasing, never mean.`
+Underneath it all: warm and friendly. Goofy, teasing, never mean.
+
+PRONUNCIATION: "Chacevia" is said CHASE-ee-vee-uh (like "chase" + "ee" + "via").
+Never say it any other way. "Rocco" is ROCK-oh.`
 
 const MAX_CHARS = 800
 
@@ -60,7 +63,11 @@ export default async function handler(req, res) {
     if (typeof text !== "string" || !text.trim()) return res.status(400).json({ error: "Nothing for Rocco to say." })
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "Server is missing OPENAI_API_KEY." })
 
-    const say = text.trim().slice(0, MAX_CHARS)
+    // Spell it the way it sounds so the voice never mangles it.
+    const say = text
+        .trim()
+        .slice(0, MAX_CHARS)
+        .replace(/chacevia/gi, "Chase-ee-via")
 
     try {
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
