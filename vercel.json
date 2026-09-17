@@ -8,6 +8,9 @@
     }
   },
   "rewrites": [
-    { "source": "/api/reminder-text", "destination": "/api/schedule-extract?action=reminder-text" }
+    { "source": "/api/reminder-text", "destination": "/api/schedule-extract?action=reminder-text" },
+    { "source": "/api/notes-pdf", "destination": "/api/pdf?action=notes-pdf" },
+    { "source": "/api/direction-pdf", "destination": "/api/pdf?action=direction-pdf" },
+    { "source": "/api/study-set", "destination": "/api/pdf?action=study-set" }
   ]
 }
