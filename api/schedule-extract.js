@@ -22,10 +22,28 @@ function setCorsHeaders(res) {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
 }
 
-const SHARED_RULES = `Extract the student's class schedule.
+const SHARED_RULES = `Extract the student's class schedule AND work out the pattern it follows.
 
 Return ONLY valid JSON — no prose, no markdown, no code fences:
-{"classes": [{"name": "...", "period": "...", "start_time": "...", "end_time": "...", "days": ["Mon","Wed"]}]}
+{
+  "pattern": {
+    "type": "weekly" | "ab" | "rotating" | "other",
+    "cycle_labels": ["A","B"],
+    "skip_weekends": true,
+    "notes": "one short sentence explaining the pattern in plain words"
+  },
+  "classes": [{"name": "...", "period": "...", "start_time": "...", "end_time": "...", "days": ["A"]}]
+}
+
+FIGURING OUT THE PATTERN — do this first, it changes how you read everything else:
+- "weekly": the same classes every Monday, every Tuesday, etc. cycle_labels is ["Mon","Tue","Wed","Thu","Fri"].
+- "ab": alternating A/B (or Blue/Gold, X/Y, Odd/Even) days. cycle_labels like ["A","B"].
+- "rotating": a numbered cycle that keeps rolling regardless of weekday — Day 1 through Day 6, etc. cycle_labels like ["Day 1","Day 2",...]. These are common and easy to misread as weekly — if you see day numbers that go past 5, or the same period holding different classes on different days, it's rotating.
+- "other": anything else (college MWF/TTh blocks, flex/seminar days, week A/week B). Explain it in notes.
+
+Signals to look for: a legend or key, columns labelled with letters or day numbers, the same period holding different classes, "drop" or "flex" periods, classes that clearly don't meet daily.
+
+Then set each class's "days" to the cycle labels it meets on — ["A"], ["Day 1","Day 4"], ["Mon","Wed","Fri"] — using the SAME labels you put in cycle_labels. Empty array [] if you can't tell.
 
 Field rules:
 - "name": the class as the student would say it ("Algebra 2", "AP Bio", "Chemistry").
@@ -52,6 +70,7 @@ This is a student casually describing their day out loud, not reading a form. So
 - ORDER MATTERS MORE THAN TIMES. They'll say "first period", "then", "after that" — preserve the sequence and put it in "period" when they name one.
 - They almost never state exact clock times. Leave start_time and end_time null rather than inventing them — the student fills those in on the next screen.
 - They may not mention days at all. Leave days as [] unless they actually say it.
+- Listen for pattern clues in how they talk: "on A days", "it rotates", "Day 3 I have...", "every other day", "I don't have it Fridays". If they clearly describe a rotation or A/B setup, set the pattern accordingly. If they just list a normal day, use "weekly".
 - Strip filler ("um", "I think", "uh") and keep the class names clean.`
 
 function parseClasses(text) {
@@ -59,14 +78,25 @@ function parseClasses(text) {
     const a = t.indexOf("{"), b = t.lastIndexOf("}")
     const obj = JSON.parse(t.slice(a, b + 1))
     const list = Array.isArray(obj.classes) ? obj.classes : []
-    const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "A", "B"]
-    return list.slice(0, 20).map((c) => ({
+    const classes = list.slice(0, 24).map((c) => ({
         name: String((c && c.name) || "").slice(0, 60) || "Untitled class",
         period: c && c.period ? String(c.period).slice(0, 20) : null,
         start_time: c && c.start_time ? String(c.start_time).slice(0, 5) : null,
         end_time: c && c.end_time ? String(c.end_time).slice(0, 5) : null,
-        days: Array.isArray(c && c.days) ? c.days.map((d) => String(d).slice(0, 3)).filter((d) => DAYS.includes(d)) : [],
+        days: Array.isArray(c && c.days) ? c.days.map((d) => String(d).slice(0, 12)).filter(Boolean).slice(0, 8) : [],
     })).filter((c) => c.name)
+
+    const p = obj.pattern || {}
+    const types = ["weekly", "ab", "rotating", "other"]
+    const pattern = {
+        type: types.includes(p.type) ? p.type : "weekly",
+        cycle_labels: Array.isArray(p.cycle_labels) && p.cycle_labels.length
+            ? p.cycle_labels.map((d) => String(d).slice(0, 12)).slice(0, 10)
+            : ["Mon", "Tue", "Wed", "Thu", "Fri"],
+        skip_weekends: p.skip_weekends !== false,
+        notes: p.notes ? String(p.notes).slice(0, 200) : "",
+    }
+    return { classes, pattern }
 }
 
 export default async function handler(req, res) {
@@ -133,13 +163,13 @@ export default async function handler(req, res) {
             )
         }
 
-        let classes
-        try { classes = parseClasses(resp.output_text) } catch (e) {
+        let parsed
+        try { parsed = parseClasses(resp.output_text) } catch (e) {
             return res.status(502).json({ error: "Couldn't read that schedule. Try a clearer photo, or just say your classes out loud." })
         }
 
         const coins = await chargeAfter(guard)
-        return res.status(200).json({ classes, transcript, coins })
+        return res.status(200).json({ classes: parsed.classes, pattern: parsed.pattern, transcript, coins })
     } catch (err) {
         console.error("schedule-extract error:", err)
         return res.status(500).json({ error: "Something went wrong reading that schedule. Try again." })
