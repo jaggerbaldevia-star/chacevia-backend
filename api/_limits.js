@@ -16,6 +16,8 @@ const LIMITS = {
     "voice-notes": 20,
     "study-set": 10,
     "direction-pdf": 40,
+    "schedule-extract": 12,
+    "reminder-text": 60,
     default: 30,
 }
 
