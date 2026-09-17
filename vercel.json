@@ -6,5 +6,8 @@
     "api/research-deck.js": {
       "maxDuration": 60
     }
-  }
+  },
+  "rewrites": [
+    { "source": "/api/reminder-text", "destination": "/api/schedule-extract?action=reminder-text" }
+  ]
 }
