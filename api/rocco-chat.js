@@ -1,13 +1,14 @@
 // api/rocco-chat.js
 //
 // Rocco — the user's little pixel buddy. Answers simple questions in a
-// short, sweet, friendly voice. Costs 1 coin per question.
+// short, sweet, friendly voice. Free — coins are cosmetic-only now.
+// Still login-gated and rate-limited via requireCoins (cost 0).
 
 import OpenAI from "openai"
-import { requireCoins, chargeAfter, svc } from "./_coins.js"
+import { requireCoins, svc } from "./_coins.js"
 import { MODELS, withRetry, ai } from "./_ai.js"
 
-const COIN_COST = 1
+const COIN_COST = 0 // free; requireCoins still enforces login + rate limit
 const DEFAULT_MODEL = MODELS.fast  // chat is short — fast tier keeps Rocco snappy
 
 function setCorsHeaders(res) {
@@ -200,7 +201,8 @@ export default async function handler(req, res) {
             await saveMemory(guard.userId, merged, recent)
         }
 
-        const coins = await chargeAfter(guard)
+        // No deduction. Still return the balance so the header pill stays in sync.
+        const coins = guard.balance
         return res.status(200).json({ reply, doodle, coins })
     } catch (err) {
         console.error("rocco-chat error:", err)

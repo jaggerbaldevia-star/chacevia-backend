@@ -15,11 +15,11 @@
 // of setting up an assignment, not a separate AI feature.
 
 import OpenAI, { toFile } from "openai"
-import { requireCoins, chargeAfter } from "./_coins.js"
+import { requireCoins } from "./_coins.js"
 import { MODELS, withRetry, ai } from "./_ai.js"
 
 export const config = { maxDuration: 60 }
-const COIN_COST = 2
+const COIN_COST = 0 // free; requireCoins still enforces login + rate limit
 const TRANSCRIBE_MODEL = "whisper-1"
 
 function setCorsHeaders(res) {
@@ -166,7 +166,8 @@ async function handleScheduleExtract(req, res, body) {
             return res.status(502).json({ error: "Couldn't read that schedule. Try a clearer photo, or just say your classes out loud." })
         }
 
-        const coins = await chargeAfter(guard)
+        // No deduction. Still return the balance so the header pill stays in sync.
+        const coins = guard.balance
         return res.status(200).json({ classes: parsed.classes, pattern: parsed.pattern, transcript, coins })
     } catch (err) {
         console.error("schedule-extract error:", err)
