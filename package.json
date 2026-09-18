@@ -8,6 +8,7 @@
     "@supabase/supabase-js": "^2.116.0",
     "openai": "^6.0.0",
     "pdf-lib": "^1.17.1",
-    "pptxgenjs": "^4.0.1"
+    "pptxgenjs": "^4.0.1",
+    "stripe": "^17.0.0"
   }
 }

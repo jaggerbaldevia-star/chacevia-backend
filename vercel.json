@@ -11,6 +11,9 @@
     { "source": "/api/reminder-text", "destination": "/api/schedule-extract?action=reminder-text" },
     { "source": "/api/notes-pdf", "destination": "/api/pdf?action=notes-pdf" },
     { "source": "/api/direction-pdf", "destination": "/api/pdf?action=direction-pdf" },
-    { "source": "/api/study-set", "destination": "/api/pdf?action=study-set" }
+    { "source": "/api/study-set", "destination": "/api/pdf?action=study-set" },
+    { "source": "/api/stripe-checkout", "destination": "/api/stripe?action=checkout" },
+    { "source": "/api/stripe-webhook", "destination": "/api/stripe?action=webhook" },
+    { "source": "/api/pro-status", "destination": "/api/stripe?action=status" }
   ]
 }
