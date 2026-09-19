@@ -24,9 +24,12 @@ import { svc, getUserId, tokenFrom } from "./_coins.js"
 export const config = { api: { bodyParser: false } }
 
 const PRO_PRICE_CENTS = 999 // founding price. Change to 1499 later.
-const PRO_BONUS_COINS = 150 // same as the $5 pack. Granted once, at purchase.
+// Zero on purpose. The app tells users coins can only be earned by showing up
+// ("not now, not later"), so Pro sells features, never currency. The RPC still
+// takes a coin count, so pass 0 rather than skipping the argument.
+const PRO_BONUS_COINS = 0
 const PRO_NAME = "Chacevia Pro — Lifetime"
-const PRO_BLURB = "150 coins now, plus every Pro feature we add later, free. One payment, forever."
+const PRO_BLURB = "Every Pro feature we add later, free. One payment, forever."
 
 let _stripe = null
 function stripe() {
