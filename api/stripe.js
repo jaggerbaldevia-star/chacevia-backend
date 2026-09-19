@@ -86,8 +86,8 @@ async function handleCheckout(req, res) {
             ],
             client_reference_id: userId,
             metadata: { user_id: userId, kind: "pro" },
-            success_url: `${process.env.PUBLIC_SITE_URL}/?pro=success&session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${process.env.PUBLIC_SITE_URL}/?pro=cancelled`,
+            success_url: `${process.env.SITE_URL}/?pro=success&session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${process.env.SITE_URL}/?pro=cancelled`,
             allow_promotion_codes: true,
         })
 
