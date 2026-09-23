@@ -14,6 +14,7 @@
     { "source": "/api/study-set", "destination": "/api/pdf?action=study-set" },
     { "source": "/api/stripe-checkout", "destination": "/api/stripe?action=checkout" },
     { "source": "/api/stripe-webhook", "destination": "/api/stripe?action=webhook" },
-    { "source": "/api/pro-status", "destination": "/api/stripe?action=status" }
+    { "source": "/api/pro-status", "destination": "/api/stripe?action=status" },
+    { "source": "/api/account-delete", "destination": "/api/account?action=delete" }
   ]
 }
