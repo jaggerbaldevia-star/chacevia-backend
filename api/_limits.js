@@ -35,6 +35,9 @@ const LIMITS = {
     "direction-pdf": 40,
     "schedule-extract": 12,
     "reminder-text": 60,
+    // Canvas connect/sync/disconnect. The 30-minute floor in schedule-extract
+    // is the real control; this is the backstop against a client looping.
+    "canvas-sync": 20,
     // The second model call every Rocco message makes — memory extraction.
     // Metered under its own name so the real call volume is visible in
     // usage_counters instead of hiding behind the chat count.

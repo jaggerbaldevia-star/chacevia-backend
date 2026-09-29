@@ -15,6 +15,11 @@
     { "source": "/api/stripe-checkout", "destination": "/api/stripe?action=checkout" },
     { "source": "/api/stripe-webhook", "destination": "/api/stripe?action=webhook" },
     { "source": "/api/pro-status", "destination": "/api/stripe?action=status" },
-    { "source": "/api/account-delete", "destination": "/api/account?action=delete" }
+    { "source": "/api/account-delete", "destination": "/api/account?action=delete" },
+    { "source": "/api/canvas-connect", "destination": "/api/schedule-extract?action=canvas-connect" },
+    { "source": "/api/canvas-sync", "destination": "/api/schedule-extract?action=canvas-sync" },
+    { "source": "/api/canvas-status", "destination": "/api/schedule-extract?action=canvas-status" },
+    { "source": "/api/canvas-disconnect", "destination": "/api/schedule-extract?action=canvas-disconnect" },
+    { "source": "/api/canvas-cron", "destination": "/api/schedule-extract?action=canvas-cron" }
   ]
 }

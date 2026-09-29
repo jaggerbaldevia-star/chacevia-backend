@@ -15,9 +15,20 @@
 // of setting up an assignment, not a separate AI feature.
 
 import OpenAI, { toFile } from "openai"
-import { requireCoins } from "./_coins.js"
+import { requireCoins, svc } from "./_coins.js"
 import { MODELS, withRetry, ai } from "./_ai.js"
 import { setCors } from "./_cors.js"
+import {
+    canvasEnabled,
+    CanvasError,
+    decryptFeed,
+    encryptFeed,
+    fetchIcs,
+    importItems,
+    parseAssignments,
+    parseFeedUrl,
+    removeCanvasData,
+} from "./_canvas.js"
 
 export const config = { maxDuration: 60 }
 const COIN_COST = 0 // free; requireCoins still enforces login + rate limit
@@ -242,6 +253,253 @@ async function handleReminderText(req, res, body) {
     }
 }
 
+// =====================================================================
+// Canvas Calendar Feed import  (v1.1, hidden behind CANVAS_ENABLED)
+// =====================================================================
+// Three actions live here rather than in a new api/canvas.js because Vercel
+// Hobby caps serverless functions at 12 and we are at 12. This file already
+// owns classes and assignments, so it is also where they belong.
+
+// How stale a sync has to be before "open the app" triggers another one. The
+// client asks on every open; the server decides. Putting the floor here means a
+// tampered-with client still can't hammer a school's Canvas on our behalf.
+const SYNC_MIN_AGE_MS = 30 * 60 * 1000
+
+async function canvasUser(req, body, res) {
+    if (!canvasEnabled()) {
+        // Not "forbidden" — as far as the outside world is concerned this
+        // endpoint does not exist until the flag is on.
+        res.status(404).json({ error: "Not found." })
+        return null
+    }
+    const guard = await requireCoins(req, body, 0, "canvas-sync")
+    if (!guard.ok) {
+        res.status(guard.status).json(guard.payload)
+        return null
+    }
+    return guard.userId
+}
+
+function canvasFailure(res, err, step) {
+    if (err instanceof CanvasError) {
+        // Log the code, never the URL — the link is the credential.
+        console.warn(`[canvas] ${step} failed: ${err.code}`)
+        return res.status(400).json({ error: err.friendly, canvasError: err.code })
+    }
+    console.error(`[canvas] ${step} error:`, err && err.message)
+    return res.status(500).json({ error: "Something went wrong talking to Canvas. Try again in a moment." })
+}
+
+async function runSync(db, userId, feedUrl) {
+    const ics = await fetchIcs(feedUrl)
+    const { items, stats } = parseAssignments(ics)
+    if (!items.length) {
+        throw new CanvasError(
+            "no-assignments",
+            stats.events
+                ? "I read that calendar but couldn't find any assignments in it. If your school puts homework somewhere other than the Canvas calendar, this won't pick it up."
+                : "That calendar came back empty. If you just made the link, give Canvas a minute and try again."
+        )
+    }
+    const result = await importItems(db, userId, items)
+    return { ...result, stats }
+}
+
+async function handleCanvasConnect(req, res, body) {
+    const userId = await canvasUser(req, body, res)
+    if (!userId) return
+
+    let feedUrl
+    try {
+        feedUrl = parseFeedUrl(body && body.feedUrl)
+    } catch (err) {
+        return canvasFailure(res, err, "parse-url")
+    }
+
+    const db = svc()
+    let result
+    try {
+        // Import BEFORE storing. A link that doesn't work shouldn't be saved,
+        // and a user who pastes a bad one should find out now rather than
+        // discovering an empty homework screen later.
+        result = await runSync(db, userId, feedUrl)
+    } catch (err) {
+        return canvasFailure(res, err, "connect")
+    }
+
+    try {
+        const enc = encryptFeed(feedUrl.toString())
+        const { error } = await db.from("canvas_links").upsert(
+            {
+                user_id: userId,
+                ...enc,
+                feed_host: feedUrl.hostname,
+                last_sync_at: new Date().toISOString(),
+                last_status: "ok",
+                last_error: null,
+                updated_at: new Date().toISOString(),
+            },
+            { onConflict: "user_id" }
+        )
+        if (error) throw error
+    } catch (err) {
+        return canvasFailure(res, err, "store")
+    }
+
+    return res.status(200).json({
+        connected: true,
+        host: feedUrl.hostname,
+        imported: result.imported,
+        classes: result.classes,
+        lastSyncAt: new Date().toISOString(),
+    })
+}
+
+async function handleCanvasSync(req, res, body) {
+    const userId = await canvasUser(req, body, res)
+    if (!userId) return
+
+    const db = svc()
+    const { data: link } = await db
+        .from("canvas_links")
+        .select("feed_ciphertext, feed_iv, feed_tag, feed_host, last_sync_at")
+        .eq("user_id", userId)
+        .maybeSingle()
+
+    if (!link) {
+        return res.status(200).json({ connected: false, synced: false })
+    }
+
+    const age = link.last_sync_at ? Date.now() - new Date(link.last_sync_at).getTime() : Infinity
+    if (age < SYNC_MIN_AGE_MS && !(body && body.force)) {
+        return res.status(200).json({
+            connected: true,
+            synced: false,
+            reason: "recent",
+            host: link.feed_host,
+            lastSyncAt: link.last_sync_at,
+        })
+    }
+
+    let result
+    try {
+        const feedUrl = parseFeedUrl(decryptFeed(link))
+        result = await runSync(db, userId, feedUrl)
+    } catch (err) {
+        // A failed sync is recorded and reported, but the stored link is kept:
+        // a school's Canvas being down for an afternoon is not a reason to make
+        // someone paste their link again.
+        await db
+            .from("canvas_links")
+            .update({
+                last_status: err instanceof CanvasError ? err.code : "error",
+                last_error: err instanceof CanvasError ? err.friendly : "Sync failed",
+                updated_at: new Date().toISOString(),
+            })
+            .eq("user_id", userId)
+        return canvasFailure(res, err, "sync")
+    }
+
+    const now = new Date().toISOString()
+    await db
+        .from("canvas_links")
+        .update({ last_sync_at: now, last_status: "ok", last_error: null, updated_at: now })
+        .eq("user_id", userId)
+
+    return res.status(200).json({
+        connected: true,
+        synced: true,
+        imported: result.imported,
+        classes: result.classes,
+        host: link.feed_host,
+        lastSyncAt: now,
+    })
+}
+
+async function handleCanvasStatus(req, res, body) {
+    const userId = await canvasUser(req, body, res)
+    if (!userId) return
+    const { data: link } = await svc()
+        .from("canvas_links")
+        // Never the ciphertext. The client has no use for it and no business
+        // holding it.
+        .select("feed_host, last_sync_at, last_status, last_error")
+        .eq("user_id", userId)
+        .maybeSingle()
+    if (!link) return res.status(200).json({ connected: false })
+    return res.status(200).json({
+        connected: true,
+        host: link.feed_host,
+        lastSyncAt: link.last_sync_at,
+        lastStatus: link.last_status,
+        lastError: link.last_error,
+    })
+}
+
+async function handleCanvasDisconnect(req, res, body) {
+    const userId = await canvasUser(req, body, res)
+    if (!userId) return
+    const db = svc()
+    try {
+        // Their data goes first. If the link row survived a failure here the
+        // user could retry; an orphaned pile of Canvas assignments with no way
+        // to remove them is the worse end state.
+        await removeCanvasData(db, userId)
+        await db.from("canvas_links").delete().eq("user_id", userId)
+    } catch (err) {
+        return canvasFailure(res, err, "disconnect")
+    }
+    return res.status(200).json({ connected: false, removed: true })
+}
+
+// Daily sweep, called by pg_cron via pg_net. Authenticated by a shared secret
+// rather than a user token, and deliberately batched: this file's maxDuration
+// is 60s and each user costs one outbound fetch to their school.
+async function handleCanvasCron(req, res) {
+    if (!canvasEnabled()) return res.status(404).json({ error: "Not found." })
+    const secret = process.env.CRON_SECRET || ""
+    const given = (req.headers && (req.headers["x-cron-secret"] || req.headers["X-Cron-Secret"])) || ""
+    if (!secret || given !== secret) return res.status(401).json({ error: "Unauthorized." })
+
+    const db = svc()
+    const cutoff = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString()
+    const { data: due } = await db
+        .from("canvas_links")
+        .select("user_id, feed_ciphertext, feed_iv, feed_tag")
+        .or(`last_sync_at.is.null,last_sync_at.lt.${cutoff}`)
+        .order("last_sync_at", { ascending: true, nullsFirst: true })
+        .limit(10)
+
+    let ok = 0
+    let failed = 0
+    for (const link of due || []) {
+        const now = new Date().toISOString()
+        try {
+            const feedUrl = parseFeedUrl(decryptFeed(link))
+            await runSync(db, link.user_id, feedUrl)
+            await db
+                .from("canvas_links")
+                .update({ last_sync_at: now, last_status: "ok", last_error: null, updated_at: now })
+                .eq("user_id", link.user_id)
+            ok++
+        } catch (err) {
+            failed++
+            await db
+                .from("canvas_links")
+                .update({
+                    // Stamped even on failure, so one permanently broken link
+                    // can't monopolise every run for the next month.
+                    last_sync_at: now,
+                    last_status: err instanceof CanvasError ? err.code : "error",
+                    last_error: err instanceof CanvasError ? err.friendly : "Sync failed",
+                    updated_at: now,
+                })
+                .eq("user_id", link.user_id)
+        }
+    }
+    return res.status(200).json({ ok, failed, considered: (due || []).length })
+}
+
 export default async function handler(req, res) {
     setCorsHeaders(req, res)
     if (req.method === "OPTIONS") return res.status(204).end()
@@ -254,5 +512,10 @@ export default async function handler(req, res) {
 
     const action = (req.query && req.query.action) || (body && body.action)
     if (action === "reminder-text") return handleReminderText(req, res, body)
+    if (action === "canvas-connect") return handleCanvasConnect(req, res, body)
+    if (action === "canvas-sync") return handleCanvasSync(req, res, body)
+    if (action === "canvas-status") return handleCanvasStatus(req, res, body)
+    if (action === "canvas-disconnect") return handleCanvasDisconnect(req, res, body)
+    if (action === "canvas-cron") return handleCanvasCron(req, res)
     return handleScheduleExtract(req, res, body)
 }

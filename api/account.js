@@ -49,6 +49,10 @@ const USER_TABLES = [
     "usage_counters",
     "push_tokens",
     "calendar_tokens",
+    // The encrypted Canvas feed link. Deleting the row is what actually
+    // revokes our copy of the credential; the Canvas assignments and classes
+    // it created are ordinary rows in the two tables above and go with them.
+    "canvas_links",
     "wallets",
 ]
 
