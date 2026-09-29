@@ -503,41 +503,67 @@ function toLocalISODate(d, timeZone) {
  * 30 minutes would be worse than no sync at all, so the upsert lists the
  * columns Canvas owns and leaves the rest of the row alone.
  */
+// "Chemistry - Schwartz" -> "chemistry". Canvas names a course the way the
+// registrar does, teacher and section included; a student names it the way they
+// say it out loud. Matching on the raw string means the import files homework
+// under a second copy of a class they already have.
+function classKey(name) {
+    return String(name || "")
+        .split(" - ")[0]
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase()
+}
+
 export async function importItems(db, userId, items) {
     const courses = [...new Set(items.map((i) => i.course).filter(Boolean))]
     const classIdByName = {}
 
+    // One read of the user's classes instead of two queries per course. A
+    // student has a handful of classes, and doing the comparison here rather
+    // than in a filter avoids PostgREST's escaping rules entirely — a course
+    // called "Physics, Honors" or one containing % would otherwise need care.
+    const { data: existing, error: listErr } = await db
+        .from("classes")
+        .select("id, name, external_id, source")
+        .eq("user_id", userId)
+    if (listErr) throw listErr
+    const mine = existing || []
+
     for (const name of courses) {
         const externalId = "canvas:course:" + name.toLowerCase()
-        // A class the user already made by hand with the same name is reused
-        // rather than duplicated — importing "AP Bio" next to their "AP Bio"
-        // would look like a bug to them, whatever the source column says.
-        //
-        // Two queries rather than one .or(): PostgREST's or() takes a
-        // comma-separated filter string, so a course called "Physics, Honors"
-        // would be parsed as two filters and the lookup would silently match
-        // the wrong row. eq() sends the value as a parameter instead.
-        let found = null
-        const byExternal = await db
-            .from("classes")
-            .select("id")
-            .eq("user_id", userId)
-            .eq("external_id", externalId)
-            .limit(1)
-        if (byExternal.data && byExternal.data.length) found = byExternal.data[0]
-        if (!found) {
-            const byName = await db
-                .from("classes")
-                .select("id")
-                .eq("user_id", userId)
-                .eq("name", name)
-                .limit(1)
-            if (byName.data && byName.data.length) found = byName.data[0]
-        }
+
+        // In order: the id we stamped on a previous sync, then the exact name
+        // (case- and space-insensitive), then the name with Canvas's
+        // " - Teacher" tail removed. That last step is what was missing: the
+        // feed says "History 10 - Deveau" and the student's own class is
+        // "History 10", so an exact match never fired and every course arrived
+        // as a duplicate.
+        let found =
+            mine.find((c) => c.external_id && c.external_id === externalId) ||
+            mine.find(
+                (c) =>
+                    String(c.name || "").replace(/\s+/g, " ").trim().toLowerCase() ===
+                    String(name).replace(/\s+/g, " ").trim().toLowerCase()
+            ) ||
+            mine.find((c) => classKey(c.name) === classKey(name))
+
         if (found) {
             classIdByName[name] = found.id
+            // Adopt it: stamping the external id means the next sync matches on
+            // the first test and never depends on name-shaped guesswork again.
+            // source is left alone, so a class the student made stays theirs and
+            // survives Disconnect.
+            if (!found.external_id) {
+                await db
+                    .from("classes")
+                    .update({ external_id: externalId })
+                    .eq("id", found.id)
+                found.external_id = externalId
+            }
             continue
         }
+
         const { data: created, error } = await db
             .from("classes")
             .insert({
@@ -548,9 +574,13 @@ export async function importItems(db, userId, items) {
                 sort_order: 999,
                 days: [],
             })
-            .select("id")
+            .select("id, name, external_id, source")
             .single()
         if (error) throw error
+        // Added to the local list so two Canvas courses that reduce to the same
+        // key — "Chemistry - Schwartz" and "Chemistry - Jones", if a student
+        // ever takes both — land in one class rather than racing to create two.
+        mine.push(created)
         classIdByName[name] = created.id
     }
 
