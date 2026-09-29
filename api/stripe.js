@@ -20,6 +20,7 @@
 
 import Stripe from "stripe"
 import { svc, getUserId, tokenFrom } from "./_coins.js"
+import { setCors } from "./_cors.js"
 
 export const config = { api: { bodyParser: false } }
 
@@ -37,10 +38,9 @@ function stripe() {
     return _stripe
 }
 
-function setCorsHeaders(res) {
-    res.setHeader("Access-Control-Allow-Origin", "*")
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
+function setCorsHeaders(req, res) {
+    // Allowlisted origins only — see api/_cors.js.
+    setCors(req, res, "GET, POST, OPTIONS", "Content-Type, Authorization")
 }
 
 async function readRawBody(req) {
@@ -209,7 +209,7 @@ async function handleStatus(req, res) {
 
 // ---------------------------------------------------------------------
 export default async function handler(req, res) {
-    setCorsHeaders(res)
+    setCorsHeaders(req, res)
     if (req.method === "OPTIONS") return res.status(204).end()
 
     const action = req.query && req.query.action

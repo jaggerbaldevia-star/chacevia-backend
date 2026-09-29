@@ -16,6 +16,7 @@
 // destructive operation.
 
 import { svc, getUserId } from "./_coins.js"
+import { setCors } from "./_cors.js"
 
 // Every table holding rows owned by a user, children before parents so the
 // explicit deletes don't depend on cascade ordering.
@@ -23,8 +24,13 @@ import { svc, getUserId } from "./_coins.js"
 // Not listed on purpose:
 //   ai_cache   — keyed on a content hash, no user_id, shared between users
 //   cosmetics  — the shop catalog, not user data
-//   push_sends — keyed on a pg_net request id, no user_id
+//   push_sends — has no user_id, but DOES hold the device push token, so it is
+//                cleared separately and EARLIER; see clearPushSends below
 //   purchases  — deliberately KEPT and anonymized instead; see below
+//
+//   calendar_tokens does not exist in the database yet (api/calendar.js has
+//   never been deployed). It stays listed because isMissingTable() tolerates an
+//   absent table, and the day calendar ships this list is already right.
 const USER_TABLES = [
     "reminders", // -> assignments
     "assignments", // -> classes
@@ -33,6 +39,10 @@ const USER_TABLES = [
     "rocco", // the drawn pixel Rocco
     "rocco_profile",
     "rocco_memory",
+    // Legacy: the tool output the pre-18-Sep web app saved (kind, title,
+    // content jsonb). Nothing writes it any more, which is exactly why it was
+    // missed here — it still holds real users' generated content.
+    "history",
     "user_cosmetics",
     "streaks",
     "daily_claims",
@@ -42,10 +52,9 @@ const USER_TABLES = [
     "wallets",
 ]
 
-function setCorsHeaders(res) {
-    res.setHeader("Access-Control-Allow-Origin", "*")
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS")
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
+function setCorsHeaders(req, res) {
+    // Allowlisted origins only — see api/_cors.js.
+    setCors(req, res, "POST, OPTIONS", "Content-Type, Authorization")
 }
 
 // A table named here but absent in this database is not a failure — the
@@ -57,6 +66,31 @@ function isMissingTable(error) {
     const code = error.code || ""
     if (code === "42P01" || code === "PGRST205" || code === "PGRST204") return true
     return /does not exist|could not find the table/i.test(error.message || "")
+}
+
+// push_sends is the reminder cron's delivery log: request_id, token,
+// reminder_id, created_at. No user_id — which is why it was excluded — but
+// `token` is the user's device push token, the same value stored in
+// push_tokens. A deleted account leaving its device token behind in a log is
+// still their data.
+//
+// ORDER MATTERS. The only way to find these rows is by the tokens in
+// push_tokens, so this MUST run before push_tokens is deleted. Once those rows
+// are gone the link is unrecoverable and the log strands forever. That is why
+// this is its own step ahead of the loop rather than another name in the list.
+async function clearPushSends(db, userId) {
+    const { data, error } = await db.from("push_tokens").select("token").eq("user_id", userId)
+    if (error) {
+        // No push_tokens table at all — then there are no sends to match.
+        if (isMissingTable(error)) return null
+        return error
+    }
+    const tokens = (data || []).map((r) => r.token).filter(Boolean)
+    if (!tokens.length) return null
+
+    const { error: delErr } = await db.from("push_sends").delete().in("token", tokens)
+    if (delErr && !isMissingTable(delErr)) return delErr
+    return null
 }
 
 // ---------------------------------------------------------------------
@@ -107,6 +141,20 @@ async function handleDelete(req, res) {
         done.push("anonymize:purchases")
     }
 
+    // Before the loop, because the loop deletes push_tokens.
+    {
+        const error = await clearPushSends(db, userId)
+        if (error) {
+            return res.status(500).json({
+                error: "Couldn't clear your notification history. Nothing was deleted.",
+                step: "delete:push_sends",
+                detail: error.message,
+                completed: done,
+            })
+        }
+        done.push("delete:push_sends")
+    }
+
     for (const table of USER_TABLES) {
         const { error } = await db.from(table).delete().eq("user_id", userId)
         if (error && !isMissingTable(error)) {
@@ -140,7 +188,7 @@ async function handleDelete(req, res) {
 }
 
 export default async function handler(req, res) {
-    setCorsHeaders(res)
+    setCorsHeaders(req, res)
     if (req.method === "OPTIONS") return res.status(200).end()
 
     const action = (req.query && req.query.action) || ""

@@ -63,15 +63,18 @@ export async function requireCoins(req, body, cost, endpoint) {
     const userId = await getUserId(tokenFrom(req, body))
     if (!userId) return { ok: false, status: 401, payload: { error: "Please log in to use Chacevia." } }
 
+    let limit = null
     if (endpoint) {
         const { checkLimit } = await import("./_limits.js")
-        const limit = await checkLimit(userId, endpoint)
+        limit = await checkLimit(userId, endpoint)
         if (!limit.ok) return limit
     }
 
     const balance = await getBalance(userId)
     if (balance < cost) return { ok: false, status: 402, payload: { error: "Not enough coins.", needCoins: true, coins: balance } }
-    return { ok: true, userId, balance, cost }
+    // `limit` rides along so an endpoint can tell the client what's left —
+    // the client can't read usage_counters itself (RLS denies it by design).
+    return { ok: true, userId, balance, cost, limit }
 }
 
 // Call AFTER the work succeeds. Deducts and returns the remaining balance.

@@ -14,16 +14,16 @@ import OpenAI from "openai"
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib"
 import { requireCoins, chargeAfter } from "./_coins.js"
 import { MODELS, withRetry } from "./_ai.js"
+import { setCors } from "./_cors.js"
 
 const COIN_COST = 2
 
 export const config = { maxDuration: 60 }
 const DEFAULT_MODEL = MODELS.smart
 
-function setCorsHeaders(res) {
-    res.setHeader("Access-Control-Allow-Origin", "*")
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS")
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type")
+function setCorsHeaders(req, res) {
+    // Allowlisted origins only — see api/_cors.js.
+    setCors(req, res, "POST, OPTIONS", "Content-Type")
 }
 
 const INSTRUCTIONS = `You are Chacevia's study tutor. You are given a document — it may be a worksheet, quiz, study guide, reading, or list of questions.
@@ -154,7 +154,7 @@ async function buildStudySheet(items, sources) {
 export { buildStudySheet }
 
 export default async function handler(req, res) {
-    setCorsHeaders(res)
+    setCorsHeaders(req, res)
     if (req.method === "OPTIONS") return res.status(204).end()
     if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." })
 

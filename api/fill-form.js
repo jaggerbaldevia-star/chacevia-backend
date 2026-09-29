@@ -11,15 +11,15 @@
 
 import OpenAI from "openai"
 import { PDFDocument, StandardFonts } from "pdf-lib"
+import { setCors } from "./_cors.js"
 
 export const config = { maxDuration: 30 }
 
 const DEFAULT_MODEL = "gpt-5.5"
 
-function setCorsHeaders(res) {
-    res.setHeader("Access-Control-Allow-Origin", "*")
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS")
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type")
+function setCorsHeaders(req, res) {
+    // Allowlisted origins only — see api/_cors.js.
+    setCors(req, res, "POST, OPTIONS", "Content-Type")
 }
 
 const INSTRUCTIONS = `You help a person fill out THEIR OWN PDF form using the personal details they gave you.
@@ -65,7 +65,7 @@ export function applyValues(form, map) {
 }
 
 export default async function handler(req, res) {
-    setCorsHeaders(res)
+    setCorsHeaders(req, res)
     if (req.method === "OPTIONS") return res.status(204).end()
     if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." })
 

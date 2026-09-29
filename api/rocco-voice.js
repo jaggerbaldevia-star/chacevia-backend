@@ -9,6 +9,7 @@
 // reply is cheap — charging twice for one answer would feel unfair.
 
 import OpenAI from "openai"
+import { setCors } from "./_cors.js"
 
 export const config = { maxDuration: 30 }
 
@@ -44,14 +45,13 @@ Never say it any other way. "Rocco" is ROCK-oh.`
 
 const MAX_CHARS = 800
 
-function setCorsHeaders(res) {
-    res.setHeader("Access-Control-Allow-Origin", "*")
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS")
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
+function setCorsHeaders(req, res) {
+    // Allowlisted origins only — see api/_cors.js.
+    setCors(req, res, "POST, OPTIONS", "Content-Type, Authorization")
 }
 
 export default async function handler(req, res) {
-    setCorsHeaders(res)
+    setCorsHeaders(req, res)
     if (req.method === "OPTIONS") return res.status(204).end()
     if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." })
 

@@ -11,6 +11,7 @@
 import OpenAI from "openai"
 import { createRequire } from "module"
 import { requireCoins, chargeAfter } from "./_coins.js"
+import { setCors } from "./_cors.js"
 
 const COIN_COST = 3
 const require = createRequire(import.meta.url)
@@ -23,10 +24,9 @@ const MAX_INPUT_LENGTH = 3000
 const DEFAULT_MODEL = "gpt-5.5"
 const MAX_PHOTOS = 4
 
-function setCorsHeaders(res) {
-    res.setHeader("Access-Control-Allow-Origin", "*")
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS")
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type")
+function setCorsHeaders(req, res) {
+    // Allowlisted origins only — see api/_cors.js.
+    setCors(req, res, "POST, OPTIONS", "Content-Type")
 }
 
 const SPEECH_INSTRUCTIONS = `You are Chacevia's speech & presentation director for students.
@@ -253,7 +253,7 @@ function buildDeck(data, sources, photoCredits, coverImg) {
 export { buildDeck }
 
 export default async function handler(req, res) {
-    setCorsHeaders(res)
+    setCorsHeaders(req, res)
     if (req.method === "OPTIONS") return res.status(204).end()
     if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." })
 

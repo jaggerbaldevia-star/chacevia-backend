@@ -17,15 +17,15 @@
 import OpenAI, { toFile } from "openai"
 import { requireCoins } from "./_coins.js"
 import { MODELS, withRetry, ai } from "./_ai.js"
+import { setCors } from "./_cors.js"
 
 export const config = { maxDuration: 60 }
 const COIN_COST = 0 // free; requireCoins still enforces login + rate limit
 const TRANSCRIBE_MODEL = "whisper-1"
 
-function setCorsHeaders(res) {
-    res.setHeader("Access-Control-Allow-Origin", "*")
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS")
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
+function setCorsHeaders(req, res) {
+    // Allowlisted origins only — see api/_cors.js.
+    setCors(req, res, "POST, OPTIONS", "Content-Type, Authorization")
 }
 
 const SHARED_RULES = `Extract the student's class schedule AND work out the pattern it follows.
@@ -243,7 +243,7 @@ async function handleReminderText(req, res, body) {
 }
 
 export default async function handler(req, res) {
-    setCorsHeaders(res)
+    setCorsHeaders(req, res)
     if (req.method === "OPTIONS") return res.status(204).end()
     if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." })
 

@@ -14,6 +14,7 @@
 
 import OpenAI from "openai";
 import { requireCoins, chargeAfter } from "./_coins.js";
+import { setCors } from "./_cors.js";
 
 const COIN_COST = 1;
 
@@ -70,22 +71,15 @@ For most requests, structure your answer with these exact section headings, in t
 If a request is small or doesn't fit all seven sections, use only the sections that genuinely apply, but always include a Final Designer Prompt. Keep the whole response focused and free of preamble.`;
 
 // --- CORS (lets your Framer site call this endpoint from the browser) -------
-function setCorsHeaders(res) {
-  // For the first version we allow ALL origins with "*".
-  //
-  // LATER, for better security, restrict this to your real Framer domain.
-  // Replace the line below with your actual published Framer URL, e.g.:
-  //   res.setHeader("Access-Control-Allow-Origin", "https://chacevia.framer.website");
-  // (Use the exact origin, with https:// and no trailing slash.)
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+function setCorsHeaders(req, res) {
+    // Allowlisted origins only — see api/_cors.js.
+    setCors(req, res, "POST, OPTIONS", "Content-Type");
 }
 
 // --- The main handler -------------------------------------------------------
 export default async function handler(req, res) {
   // Always set CORS headers, on every response.
-  setCorsHeaders(res);
+  setCorsHeaders(req, res);
 
   // Browsers send an OPTIONS "preflight" request before the real POST.
   // We answer it with a 204 (no content) so the browser knows it's allowed.

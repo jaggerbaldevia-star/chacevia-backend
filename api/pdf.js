@@ -10,6 +10,7 @@ import OpenAI, { toFile } from "openai"
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib"
 import { requireCoins, chargeAfter } from "./_coins.js"
 import { MODELS, withRetry, cacheKey, cacheGet, cacheSet } from "./_ai.js"
+import { setCors } from "./_cors.js"
 
 export const config = { maxDuration: 60 }
 
@@ -40,9 +41,7 @@ function wrapNotesPdf(text, font, size, maxW) {
 }
 
 async function handleNotesPdf(req, res) {
-    res.setHeader("Access-Control-Allow-Origin", "*")
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS")
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type")
+    setCors(req, res, "POST, OPTIONS", "Content-Type")
     if (req.method === "OPTIONS") return res.status(204).end()
     if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." })
 
@@ -213,9 +212,7 @@ async function buildBriefPdf(idea, text) {
 }
 
 async function handleDirectionPdf(req, res) {
-    res.setHeader("Access-Control-Allow-Origin", "*")
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS")
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
+    setCors(req, res, "POST, OPTIONS", "Content-Type, Authorization")
     if (req.method === "OPTIONS") return res.status(204).end()
     if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." })
 
@@ -375,9 +372,7 @@ async function buildStudyKitPdf(data) {
 }
 
 async function handleStudySet(req, res) {
-    res.setHeader("Access-Control-Allow-Origin", "*")
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS")
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
+    setCors(req, res, "POST, OPTIONS", "Content-Type, Authorization")
     if (req.method === "OPTIONS") return res.status(204).end()
     if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." })
 
@@ -468,6 +463,6 @@ export default async function handler(req, res) {
     if (action === "study-set") return handleStudySet(req, res)
     if (action === "notes-pdf") return handleNotesPdf(req, res)
 
-    res.setHeader("Access-Control-Allow-Origin", "*")
+    setCors(req, res, "POST, OPTIONS", "Content-Type, Authorization")
     return res.status(404).json({ error: "Unknown action." })
 }

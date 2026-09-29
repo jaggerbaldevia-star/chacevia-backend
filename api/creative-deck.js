@@ -14,6 +14,7 @@ import OpenAI from "openai"
 // setup on Vercel. Loading it through createRequire forces its CommonJS build,
 // which runs cleanly in the serverless environment.
 import { createRequire } from "module"
+import { setCors } from "./_cors.js"
 const require = createRequire(import.meta.url)
 const pptxgen = require("pptxgenjs")
 
@@ -22,11 +23,9 @@ const MAX_CONTEXT_LENGTH = 8000
 const DEFAULT_MODEL = "gpt-5.5"
 const BRAND_ORANGE = "ED6A2C"
 
-function setCorsHeaders(res) {
-    // Allow all origins for now. LATER: replace "*" with your Framer domain.
-    res.setHeader("Access-Control-Allow-Origin", "*")
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS")
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type")
+function setCorsHeaders(req, res) {
+    // Allowlisted origins only — see api/_cors.js.
+    setCors(req, res, "POST, OPTIONS", "Content-Type")
 }
 
 // Instructions that make Chacevia produce a clean, presentation-ready outline.
@@ -132,7 +131,7 @@ export async function buildDeck(data) {
 }
 
 export default async function handler(req, res) {
-    setCorsHeaders(res)
+    setCorsHeaders(req, res)
 
     if (req.method === "OPTIONS") return res.status(204).end()
     if (req.method !== "POST") {
