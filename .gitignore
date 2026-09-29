@@ -1,3 +1,6 @@
 .DS_Store
 .vercel
 .env*
+
+# Dependencies. Vercel installs from package-lock.json, which IS committed.
+node_modules/
