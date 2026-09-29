@@ -240,6 +240,10 @@ async function fetchOnce(u, redirectsLeft) {
         }
     }
     const pinned = addrs[0]
+    // Every address in `addrs` has already been checked public above, so any of
+    // them is safe to hand back. Returning all of them keeps IPv4/IPv6 fallback
+    // working instead of betting the whole request on addrs[0].
+    const vetted = addrs.map((a) => ({ address: a.address, family: a.family }))
 
     return await new Promise((resolve, reject) => {
         const req = https.request(
@@ -255,7 +259,19 @@ async function fetchOnce(u, redirectsLeft) {
                 // which would quietly reopen the rebinding hole this closes.
                 agent: new https.Agent({ keepAlive: false, maxSockets: 1 }),
                 // The whole point: no second DNS resolution.
-                lookup: (hostname, opts, cb) => cb(null, pinned.address, pinned.family),
+                //
+                // MUST honour opts.all. Since Node 20, net.connect enables
+                // Happy Eyeballs (autoSelectFamily) by default and calls a
+                // custom lookup with { all: true }, expecting an ARRAY of
+                // { address, family }. Answering with the legacy
+                // cb(null, address, family) form made Node read `address` as
+                // undefined and every connect failed with
+                // ERR_INVALID_IP_ADDRESS — before TLS, so it surfaced as
+                // "I couldn't reach that server" for every school.
+                lookup: (hostname, opts, cb) =>
+                    opts && opts.all
+                        ? cb(null, vetted)
+                        : cb(null, pinned.address, pinned.family),
                 headers: {
                     Accept: "text/calendar, text/plain;q=0.8, */*;q=0.5",
                     "User-Agent": "Chacevia/1.1 (+https://chacevia.com)",
