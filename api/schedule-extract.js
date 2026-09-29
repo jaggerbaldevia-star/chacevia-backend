@@ -290,9 +290,10 @@ function canvasFailure(res, err, step) {
     return res.status(500).json({ error: "Something went wrong talking to Canvas. Try again in a moment." })
 }
 
-async function runSync(db, userId, feedUrl) {
+async function runSync(db, userId, feedUrl, timeZone) {
     const ics = await fetchIcs(feedUrl)
-    const { items, stats } = parseAssignments(ics)
+    // timeZone decides which calendar day a late-evening deadline lands on.
+    const { items, stats } = parseAssignments(ics, timeZone)
     if (!items.length) {
         throw new CanvasError(
             "no-assignments",
@@ -322,7 +323,7 @@ async function handleCanvasConnect(req, res, body) {
         // Import BEFORE storing. A link that doesn't work shouldn't be saved,
         // and a user who pastes a bad one should find out now rather than
         // discovering an empty homework screen later.
-        result = await runSync(db, userId, feedUrl)
+        result = await runSync(db, userId, feedUrl, body && body.tz)
     } catch (err) {
         return canvasFailure(res, err, "connect")
     }
@@ -334,6 +335,9 @@ async function handleCanvasConnect(req, res, body) {
                 user_id: userId,
                 ...enc,
                 feed_host: feedUrl.hostname,
+                // Kept so the nightly cron, which has no client to ask, files due
+                // dates on the same day the student sees in the app.
+                tz: (body && body.tz) || null,
                 last_sync_at: new Date().toISOString(),
                 last_status: "ok",
                 last_error: null,
@@ -384,7 +388,7 @@ async function handleCanvasSync(req, res, body) {
     let result
     try {
         const feedUrl = parseFeedUrl(decryptFeed(link))
-        result = await runSync(db, userId, feedUrl)
+        result = await runSync(db, userId, feedUrl, body && body.tz)
     } catch (err) {
         // A failed sync is recorded and reported, but the stored link is kept:
         // a school's Canvas being down for an afternoon is not a reason to make
@@ -403,7 +407,13 @@ async function handleCanvasSync(req, res, body) {
     const now = new Date().toISOString()
     await db
         .from("canvas_links")
-        .update({ last_sync_at: now, last_status: "ok", last_error: null, updated_at: now })
+        .update({
+            last_sync_at: now,
+            last_status: "ok",
+            last_error: null,
+            tz: (body && body.tz) || undefined,
+            updated_at: now,
+        })
         .eq("user_id", userId)
 
     return res.status(200).json({
@@ -465,7 +475,7 @@ async function handleCanvasCron(req, res) {
     const cutoff = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString()
     const { data: due } = await db
         .from("canvas_links")
-        .select("user_id, feed_ciphertext, feed_iv, feed_tag")
+        .select("user_id, feed_ciphertext, feed_iv, feed_tag, tz")
         .or(`last_sync_at.is.null,last_sync_at.lt.${cutoff}`)
         .order("last_sync_at", { ascending: true, nullsFirst: true })
         .limit(10)
@@ -476,7 +486,7 @@ async function handleCanvasCron(req, res) {
         const now = new Date().toISOString()
         try {
             const feedUrl = parseFeedUrl(decryptFeed(link))
-            await runSync(db, link.user_id, feedUrl)
+            await runSync(db, link.user_id, feedUrl, link.tz)
             await db
                 .from("canvas_links")
                 .update({ last_sync_at: now, last_status: "ok", last_error: null, updated_at: now })

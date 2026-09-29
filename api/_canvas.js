@@ -327,18 +327,69 @@ export async function fetchIcs(u) {
 const TITLE_COURSE = /^(.*?)\s*\[([^\]]+)\]\s*$/
 
 // An assignment is identified by BOTH signals, not either: the UID Canvas mints
-// for assignment events, and a URL pointing at /assignments/<id>. Personal
-// calendar entries, office hours and school-wide events carry neither, and
-// requiring both keeps someone's dentist appointment out of their homework.
+// for assignment events, and an assignment id in the URL. Personal calendar
+// entries, office hours and school-wide events carry neither, and requiring
+// both keeps someone's dentist appointment out of their homework.
+//
+// The URL shape was WRONG in the first version of this file, and a real feed is
+// what caught it. I assumed a path of /courses/<id>/assignments/<id>; Canvas
+// actually emits the calendar page with the assignment in the FRAGMENT:
+//   https://saas.instructure.com/calendar?include_contexts=course_3228&...#assignment_23040
+// Requiring a /assignments/<id> path meant all 36 events in the test feed were
+// rejected and the import silently did nothing. Both spellings are accepted now.
 const UID_ASSIGNMENT = /assignment/i
-const URL_ASSIGNMENT = /\/assignments\/\d+/i
+const URL_ASSIGNMENT = /(#assignment_(\d+))|(\/assignments\/(\d+))/i
+
+// The stable identity of an assignment, used for dedupe. The UID is not it:
+// Canvas mints a separate "event-assignment-override-<n>" for a section with
+// its own due date, so a student who sees both the base event and an override
+// would get two rows for one piece of homework. The assignment id in the URL is
+// the same in both. The test feed happened to contain no such pair — 36 events,
+// 36 distinct ids — so this is defence against a case I could not reproduce
+// rather than one I observed.
+function assignmentIdFrom(url) {
+    const m = String(url || "").match(URL_ASSIGNMENT)
+    if (!m) return null
+    return m[2] || m[4] || null
+}
+
+// Strips a trailing parenthetical that just repeats the course, so
+//   "Reading #1 (History 10 - Deveau - (HIST1001-20)) [History 10 - Deveau]"
+// becomes "Reading #1" rather than keeping the noise the bracket already said.
+// Counts depth from the end because the tail nests: (Course - (CODE)).
+function stripCourseTail(title, course) {
+    if (!course || !title.endsWith(")")) return title
+    let depth = 0
+    for (let i = title.length - 1; i >= 0; i--) {
+        const ch = title[i]
+        if (ch === ")") depth++
+        else if (ch === "(") {
+            depth--
+            if (depth === 0) {
+                const inner = title.slice(i + 1, -1).trim()
+                const head = course.split(" - ")[0].trim().toLowerCase()
+                // Only strip when it really is the course repeated — a title
+                // that legitimately ends in brackets keeps them.
+                if (
+                    head &&
+                    (inner.toLowerCase().startsWith(course.toLowerCase()) ||
+                        inner.toLowerCase().startsWith(head))
+                ) {
+                    return title.slice(0, i).trim()
+                }
+                return title
+            }
+        }
+    }
+    return title
+}
 
 /**
  * Turns an .ics body into importable rows.
  * Returns { items, stats } — stats is for diagnosing a feed that imports
  * nothing, which is the failure mode users actually hit.
  */
-export function parseAssignments(icsText) {
+export function parseAssignments(icsText, timeZone) {
     let comp
     try {
         comp = new ICAL.Component(ICAL.parse(icsText))
@@ -359,7 +410,8 @@ export function parseAssignments(icsText) {
         }
         const uid = String(ev.uid || "")
         const url = String(ve.getFirstPropertyValue("url") || "")
-        if (!UID_ASSIGNMENT.test(uid) || !URL_ASSIGNMENT.test(url)) {
+        const assignmentId = assignmentIdFrom(url)
+        if (!UID_ASSIGNMENT.test(uid) || !assignmentId) {
             stats.skippedNotAssignment++
             continue
         }
@@ -374,18 +426,18 @@ export function parseAssignments(icsText) {
 
         const summary = String(ev.summary || "").trim()
         const m = summary.match(TITLE_COURSE)
-        const title = (m ? m[1] : summary).trim() || "Untitled assignment"
         const course = (m ? m[2] : "").trim()
+        const title = stripCourseTail((m ? m[1] : summary).trim(), course) || "Untitled assignment"
 
         stats.assignments++
         items.push({
-            external_id: "canvas:" + uid,
+            // Keyed on the assignment, not the calendar event — see
+            // assignmentIdFrom. Falls back to the UID only if Canvas ever emits
+            // an assignment event without one.
+            external_id: "canvas:assignment:" + (assignmentId || uid),
             title: title.slice(0, 200),
             course: course.slice(0, 120),
-            // due_date is a date column; the feed's time is Canvas's 23:59 in
-            // whatever timezone it decided, and a date is what the rest of the
-            // app compares against.
-            due_date: toISODate(start),
+            due_date: toLocalISODate(start, timeZone),
             url: url.slice(0, 500),
         })
     }
@@ -393,14 +445,31 @@ export function parseAssignments(icsText) {
     return { items, stats }
 }
 
-function toISODate(d) {
-    return (
-        d.getUTCFullYear() +
-        "-" +
-        String(d.getUTCMonth() + 1).padStart(2, "0") +
-        "-" +
-        String(d.getUTCDate()).padStart(2, "0")
-    )
+// The calendar gives an instant; due_date is a date, and which date it is
+// depends on where the student is standing.
+//
+// Canvas emits DTSTART as a UTC timestamp, so an 11:59pm Eastern deadline
+// arrives as 03:59Z the NEXT day. Formatting that with UTC parts would file the
+// work under tomorrow — the homework screen would show the wrong day and Focus
+// Mode would stop blocking a night early. The test feed didn't expose this (its
+// latest due time is 23:00Z, comfortably inside the same Eastern day), which is
+// exactly why it's worth fixing on principle rather than on symptom.
+//
+// timeZone comes from the client's own Intl lookup, the same way claim_daily
+// already does it. Falling back to UTC keeps the old behaviour when it's absent.
+function toLocalISODate(d, timeZone) {
+    try {
+        // en-CA formats as YYYY-MM-DD, which is the shape the date column wants.
+        return new Intl.DateTimeFormat("en-CA", {
+            timeZone: timeZone || "UTC",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+        }).format(d)
+    } catch (e) {
+        // An unrecognised zone from a client shouldn't fail the whole import.
+        return d.toISOString().slice(0, 10)
+    }
 }
 
 // ---------------------------------------------------------------------

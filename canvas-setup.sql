@@ -18,6 +18,8 @@ create table if not exists public.canvas_links (
     feed_iv         text        not null,
     feed_tag        text        not null,
     feed_host       text,                 -- shown in Settings ("connected to x.instructure.com")
+    tz              text,                 -- the student's IANA zone, so the nightly cron files a
+                                          -- late-evening deadline under the right day
     last_sync_at    timestamptz,
     last_status     text,
     last_error      text,
