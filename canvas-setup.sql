@@ -72,15 +72,31 @@ alter table public.classes add column if not exists source text not null default
 -- Hourly, syncing at most 10 users whose last sync is over 20 hours old, so
 -- every connected account gets one refresh a day without any single run
 -- outliving the 60s function limit. The endpoint authenticates the call with
--- the x-cron-secret header, so CRON_SECRET must be set in Vercel first.
+-- the x-cron-secret header.
 --
--- Replace <CRON_SECRET> below with the same value you put in Vercel. If you'd
--- rather that secret not sit in cron.job's command text, say so and I'll switch
--- this to read it from a settings table instead.
+-- VAULT VERSION. The secret is NOT written into cron.job's command text, where
+-- it would sit in plaintext readable by anything that can select from cron.job
+-- and show up in any schema dump. It goes into Supabase Vault instead, and the
+-- job reads it at run time. It still passes through this editor once when you
+-- create it — there is no way to load a secret without typing it somewhere —
+-- but it is not stored in the clear afterwards.
 --
--- Requires pg_cron and pg_net. Your earlier query tells us whether they're
--- already installed — if not, this needs the Supabase dashboard's Database →
--- Extensions first.
+-- Requires pg_cron and pg_net. If the extensions query came back empty, enable
+-- them first in Dashboard → Database → Extensions.
+
+-- 4a. Store the secret. Use the SAME value you put in CRON_SECRET in Vercel.
+--     Re-running with a name that already exists errors, so update instead:
+--       select vault.update_secret(
+--         (select id from vault.secrets where name = 'chacevia_cron_secret'),
+--         '<CRON_SECRET>');
+select vault.create_secret(
+    '<CRON_SECRET>',
+    'chacevia_cron_secret',
+    'Shared secret the Canvas daily sync sends as x-cron-secret'
+);
+
+-- 4b. Schedule the job. The secret is fetched per run from the Vault view,
+--     which only the postgres role (what pg_cron runs as) can read.
 select cron.schedule(
     'chacevia-canvas-daily',
     '17 * * * *',
@@ -89,14 +105,33 @@ select cron.schedule(
         url     := 'https://chacevia-backend.vercel.app/api/canvas-cron',
         headers := jsonb_build_object(
             'Content-Type',  'application/json',
-            'x-cron-secret', '<CRON_SECRET>'
+            'x-cron-secret', (
+                select decrypted_secret
+                  from vault.decrypted_secrets
+                 where name = 'chacevia_cron_secret'
+            )
         ),
         body    := '{}'::jsonb
     );
     $job$
 );
 
--- To verify afterwards:
---   select jobid, jobname, schedule, active from cron.job where jobname = 'chacevia-canvas-daily';
--- To remove it:
---   select cron.unschedule('chacevia-canvas-daily');
+-- 4c. Verify — this is the one to read back. Confirms the job exists AND that
+--     its command carries no literal secret.
+select
+    jobname,
+    schedule,
+    active,
+    command like '%decrypted_secrets%'                as reads_from_vault,   -- want true
+    command like '%' || 'x-cron-secret'' , ''%'       as has_inline_secret   -- want false
+from cron.job
+where jobname = 'chacevia-canvas-daily';
+
+-- Did a run actually fire and get a 200 back? (after the next :17)
+--   select id, status_code, created
+--     from net._http_response
+--    order by created desc limit 5;
+--
+-- To remove the job:      select cron.unschedule('chacevia-canvas-daily');
+-- To read the secret:     select decrypted_secret from vault.decrypted_secrets
+--                          where name = 'chacevia_cron_secret';

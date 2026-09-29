@@ -21,6 +21,26 @@ export function canvasEnabled() {
     return String(process.env.CANVAS_ENABLED || "") === "1"
 }
 
+// Beta allowlist. CANVAS_BETA_USERS is a comma-separated list of Supabase user
+// ids; only those accounts can see or use Canvas.
+//
+// An empty or missing list means NOBODY, not everybody. The other reading is
+// how a feature flag turns into an accidental launch: someone sets
+// CANVAS_ENABLED=1 to test, forgets the list, and it's live for every user at
+// once. Opening this to everyone should take a deliberate edit, which is what
+// CANVAS_BETA_USERS=* is for.
+export function canvasAllowed(userId) {
+    if (!canvasEnabled()) return false
+    const raw = String(process.env.CANVAS_BETA_USERS || "").trim()
+    if (!raw) return false
+    if (raw === "*") return true
+    return raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .includes(String(userId))
+}
+
 // ---------------------------------------------------------------------
 // Encryption — AES-256-GCM
 // ---------------------------------------------------------------------

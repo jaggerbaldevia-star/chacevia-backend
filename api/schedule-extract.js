@@ -19,6 +19,7 @@ import { requireCoins, svc } from "./_coins.js"
 import { MODELS, withRetry, ai } from "./_ai.js"
 import { setCors } from "./_cors.js"
 import {
+    canvasAllowed,
     canvasEnabled,
     CanvasError,
     decryptFeed,
@@ -272,9 +273,18 @@ async function canvasUser(req, body, res) {
         res.status(404).json({ error: "Not found." })
         return null
     }
+    // Login is resolved BEFORE the allowlist, because the allowlist is keyed on
+    // the user id and the id has to come from a verified token — never from
+    // anything the caller sends.
     const guard = await requireCoins(req, body, 0, "canvas-sync")
     if (!guard.ok) {
         res.status(guard.status).json(guard.payload)
+        return null
+    }
+    if (!canvasAllowed(guard.userId)) {
+        // The same 404 a disabled flag gives. A user outside the beta learns
+        // nothing about whether the feature exists.
+        res.status(404).json({ error: "Not found." })
         return null
     }
     return guard.userId
@@ -436,8 +446,9 @@ async function handleCanvasStatus(req, res, body) {
         .select("feed_host, last_sync_at, last_status, last_error")
         .eq("user_id", userId)
         .maybeSingle()
-    if (!link) return res.status(200).json({ connected: false })
+    if (!link) return res.status(200).json({ enabled: true, connected: false })
     return res.status(200).json({
+        enabled: true,
         connected: true,
         host: link.feed_host,
         lastSyncAt: link.last_sync_at,
