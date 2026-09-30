@@ -20,11 +20,25 @@
 
 import Stripe from "stripe"
 import { svc, getUserId, tokenFrom } from "./_coins.js"
+import {
+    PRODUCT_TRIAL,
+    TRIAL_DAYS,
+    TRIAL_WARN_DAYS_LEFT,
+    applyRevenueCatEvent,
+    founderSaleOpen,
+    founderUntilISO,
+    readEntitlement,
+    resolvePremium,
+} from "./_premium.js"
 import { setCors } from "./_cors.js"
 
 export const config = { api: { bodyParser: false } }
 
-const PRO_PRICE_CENTS = 999 // founding price. Change to 1499 later.
+// Legacy Stripe "Pro" — the web-only $9.99 lifetime unlock. Superseded by the
+// App Store products in 1.1 ($2.99/mo, $12.99 founder, $0 7-day trial); kept
+// working for the people who already bought it, who are now Founding Members.
+// Do not add new prices here — App Store prices come from the store itself.
+const PRO_PRICE_CENTS = 999
 // Zero on purpose. The app tells users coins can only be earned by showing up
 // ("not now, not later"), so Pro sells features, never currency. The RPC still
 // takes a coin count, so pass 0 rather than skipping the argument.
@@ -208,6 +222,186 @@ async function handleStatus(req, res) {
 }
 
 // ---------------------------------------------------------------------
+// rc-webhook — RevenueCat calls this
+// ---------------------------------------------------------------------
+async function handleRcWebhook(req, res) {
+    if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." })
+
+    // RevenueCat sends whatever Authorization header you configure in the
+    // dashboard. Without a secret configured we refuse rather than accept
+    // anonymous entitlement changes.
+    const want = process.env.REVENUECAT_WEBHOOK_SECRET || ""
+    const got = (req.headers && req.headers.authorization) || ""
+    if (!want || got !== want) return res.status(401).json({ error: "Unauthorized." })
+
+    let body
+    try {
+        body = JSON.parse((await readRawBody(req)).toString("utf8") || "{}")
+    } catch (e) {
+        return res.status(400).json({ error: "Body must be valid JSON." })
+    }
+    const ev = body.event || body
+    const eventId = ev && ev.id
+    if (!eventId) return res.status(400).json({ error: "Missing event id." })
+
+    // RevenueCat's app_user_id IS the Supabase user id, because the app logs in
+    // to RevenueCat with it. original_app_user_id covers an aliased subscriber.
+    const userId = ev.app_user_id || ev.original_app_user_id || null
+    const db = svc()
+
+    // Idempotency first: the event id is the primary key, so a retry conflicts
+    // and we stop here instead of applying anything twice.
+    const { error: insErr } = await db.from("billing_events").insert({
+        event_id: String(eventId),
+        user_id: userId,
+        type: ev.type || null,
+        event_ms: Number(ev.event_timestamp_ms || 0) || null,
+        payload: ev,
+    })
+    if (insErr) {
+        // 23505 = unique violation = we have seen this event already.
+        if (insErr.code === "23505") return res.status(200).json({ ok: true, duplicate: true })
+        console.error("billing_events insert failed:", insErr)
+        return res.status(500).json({ error: "Could not record event." })
+    }
+
+    if (!userId) return res.status(200).json({ ok: true, skipped: "no app_user_id" })
+
+    try {
+        const result = await applyRevenueCatEvent(db, ev, userId)
+        // 200 even when ignored: a non-2xx makes RevenueCat retry an event we
+        // have already decided about.
+        return res.status(200).json({ ok: true, result })
+    } catch (err) {
+        console.error("revenuecat apply error:", err)
+        // A real failure DOES deserve a retry.
+        return res.status(500).json({ error: "Could not apply event." })
+    }
+}
+
+// ---------------------------------------------------------------------
+// premium — the single status read for the app and the web
+// ---------------------------------------------------------------------
+async function handlePremium(req, res) {
+    if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed. Use GET." })
+
+    const userId = await getUserId(tokenFrom(req, null))
+    if (!userId) return res.status(401).json({ error: "Please log in to use Chacevia." })
+
+    try {
+        const db = svc()
+        const row = await readEntitlement(db, userId)
+        const now = new Date()
+        const state = resolvePremium(row, now)
+
+        const { data: claim } = await db
+            .from("trial_claims")
+            .select("claimed_at, expires_at, warned_at")
+            .eq("user_id", userId)
+            .maybeSingle()
+
+        let trial = { claimed: false, eligible: true }
+        if (claim) {
+            const ms = new Date(claim.expires_at).getTime() - now.getTime()
+            const daysLeft = Math.max(0, Math.ceil(ms / 86400000))
+            trial = {
+                claimed: true,
+                eligible: false,
+                expiresAt: claim.expires_at,
+                daysLeft,
+                active: ms > 0,
+                // Day 6 of 7: one day left, and Rocco has not said so yet.
+                needsWarning: ms > 0 && daysLeft <= TRIAL_WARN_DAYS_LEFT && !claim.warned_at,
+            }
+        }
+
+        return res.status(200).json({
+            ...state,
+            trial,
+            trialDays: TRIAL_DAYS,
+            founderSaleOpen: founderSaleOpen(now),
+            founderUntil: founderUntilISO(),
+        })
+    } catch (err) {
+        console.error("premium status error:", err)
+        return res.status(500).json({ error: "Couldn't load your plan." })
+    }
+}
+
+// ---------------------------------------------------------------------
+// trial — claim the 7-day free trial
+// ---------------------------------------------------------------------
+// The client proves the $0 purchase happened by sending Apple's
+// original_transaction_id for it. The SERVER sets the expiry; a client that
+// asks for a longer trial is ignored, because it is never asked.
+async function handleTrial(req, res) {
+    if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." })
+
+    const userId = await getUserId(tokenFrom(req, null))
+    if (!userId) return res.status(401).json({ error: "Please log in to use Chacevia." })
+
+    let body = {}
+    try {
+        body = JSON.parse((await readRawBody(req)).toString("utf8") || "{}")
+    } catch (e) {
+        return res.status(400).json({ error: "Body must be valid JSON." })
+    }
+    const appleTxn = body.appleOriginalTransactionId
+        ? String(body.appleOriginalTransactionId).slice(0, 120)
+        : null
+
+    const db = svc()
+    const now = new Date()
+
+    try {
+        const existing = await readEntitlement(db, userId)
+        const state = resolvePremium(existing, now)
+        // Already premium by a route that is better than a trial — nothing to do,
+        // and definitely nothing to downgrade.
+        if (state.isPremium && state.source !== "trial") {
+            return res.status(200).json({ ok: true, alreadyPremium: true, source: state.source })
+        }
+
+        const expires = new Date(now.getTime() + TRIAL_DAYS * 86400000).toISOString()
+        const { error } = await db.from("trial_claims").insert({
+            user_id: userId,
+            apple_original_transaction_id: appleTxn,
+            claimed_at: now.toISOString(),
+            expires_at: expires,
+        })
+        if (error) {
+            // Both "one per user" and "one per Apple ID" are unique indexes, so
+            // a second attempt lands here rather than in a race.
+            if (error.code === "23505") {
+                return res.status(409).json({
+                    error: "That free trial has already been used.",
+                    alreadyUsed: true,
+                })
+            }
+            throw error
+        }
+
+        await db.from("entitlements").upsert(
+            {
+                user_id: userId,
+                is_premium: true,
+                source: "trial",
+                product_id: PRODUCT_TRIAL,
+                expires_at: expires,
+                will_renew: false,
+                updated_at: now.toISOString(),
+            },
+            { onConflict: "user_id" }
+        )
+
+        return res.status(200).json({ ok: true, expiresAt: expires, daysLeft: TRIAL_DAYS })
+    } catch (err) {
+        console.error("trial claim error:", err)
+        return res.status(500).json({ error: "Couldn't start your trial. Try again." })
+    }
+}
+
+// ---------------------------------------------------------------------
 export default async function handler(req, res) {
     setCorsHeaders(req, res)
     if (req.method === "OPTIONS") return res.status(204).end()
@@ -215,6 +409,9 @@ export default async function handler(req, res) {
     const action = req.query && req.query.action
 
     if (action === "webhook") return handleWebhook(req, res)
+    if (action === "rc-webhook") return handleRcWebhook(req, res)
+    if (action === "premium") return handlePremium(req, res)
+    if (action === "trial") return handleTrial(req, res)
     if (action === "status") return handleStatus(req, res)
     if (action === "checkout") return handleCheckout(req, res)
 
