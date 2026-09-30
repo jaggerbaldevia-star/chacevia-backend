@@ -531,7 +531,29 @@ function classKey(name) {
         .toLowerCase()
 }
 
-export async function importItems(db, userId, items) {
+/**
+ * The deep link we are willing to store and later hand a browser.
+ *
+ * The ICS feed is a school's, but it is still input: a URL from it ends up as
+ * an href, so `javascript:` or a link to somewhere else entirely must not
+ * survive. Two rules — https only, and the host has to be the SAME Canvas the
+ * feed came from. Anything else is dropped rather than rejected, because one
+ * odd event should not fail a whole sync.
+ */
+export function safeCanvasUrl(raw, feedHost) {
+    if (!raw || !feedHost) return null
+    let u
+    try {
+        u = new URL(String(raw))
+    } catch (e) {
+        return null
+    }
+    if (u.protocol !== "https:") return null
+    if (u.hostname.toLowerCase() !== String(feedHost).toLowerCase()) return null
+    return u.toString().slice(0, 500)
+}
+
+export async function importItems(db, userId, items, feedHost) {
     const courses = [...new Set(items.map((i) => i.course).filter(Boolean))]
     const classIdByName = {}
 
@@ -607,6 +629,9 @@ export async function importItems(db, userId, items) {
         due_date: i.due_date,
         external_id: i.external_id,
         source: "canvas",
+        // Canvas puts the assignment's own page in the event's URL property, so
+        // "open in canvas" can land on the assignment instead of the dashboard.
+        url: safeCanvasUrl(i.url, feedHost),
     }))
 
     let imported = 0

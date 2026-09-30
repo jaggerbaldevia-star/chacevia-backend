@@ -312,7 +312,9 @@ async function runSync(db, userId, feedUrl, timeZone) {
                 : "That calendar came back empty. If you just made the link, give Canvas a minute and try again."
         )
     }
-    const result = await importItems(db, userId, items)
+    // feedUrl.hostname is what pins the stored deep links to this school's
+    // Canvas — see safeCanvasUrl.
+    const result = await importItems(db, userId, items, feedUrl.hostname)
     return { ...result, stats }
 }
 
