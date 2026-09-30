@@ -85,7 +85,7 @@ const MAX_RECENT = 8
 async function loadProfile(userId) {
     if (!userId || !process.env.SUPABASE_URL) return null
     try {
-        const { data } = await svc().from("rocco_profile").select("display_name, from_place, age, background").eq("user_id", userId).maybeSingle()
+        const { data } = await svc().from("rocco_profile").select("display_name, from_place, background").eq("user_id", userId).maybeSingle()
         return data || null
     } catch (e) { return null }
 }
@@ -176,7 +176,6 @@ export default async function handler(req, res) {
             const bits = []
             if (prof.display_name) bits.push("goes by " + prof.display_name)
             if (prof.from_place) bits.push("from " + prof.from_place)
-            if (prof.age) bits.push("age " + prof.age)
             if (prof.background && !/prefer not/i.test(prof.background)) bits.push("background: " + prof.background)
             if (bits.length) context += "About them: " + bits.join(", ") + ". Use this to pitch things at the right level; never bring up their background unless they do.\n"
         }
