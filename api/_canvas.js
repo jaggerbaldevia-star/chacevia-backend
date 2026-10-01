@@ -13,7 +13,7 @@ import dns from "dns"
 import https from "https"
 import net from "net"
 import ICAL from "ical.js"
-import { shortenBatch, ruleShorten } from "./_shorten.js"
+import { shortenBatch, ruleShorten, ruleShortClass } from "./_shorten.js"
 
 // Feature flag. Absent or not "1" and every Canvas action 404s, so while this
 // is hidden the endpoints do not exist as far as the outside world is
@@ -612,6 +612,11 @@ export async function importItems(db, userId, items, feedHost) {
                 source: "canvas",
                 sort_order: 999,
                 days: [],
+                // Named as it is created, so a class Canvas has just invented
+                // already has its corner label the first time a square using it
+                // is drawn. The dictionary places almost every real subject, so
+                // this is free in practice.
+                short_name: ruleShortClass(name).short,
             })
             .select("id, name, external_id, source")
             .single()

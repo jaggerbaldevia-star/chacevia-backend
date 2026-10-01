@@ -17,7 +17,13 @@
 import OpenAI, { toFile } from "openai"
 import { requireCoins, svc } from "./_coins.js"
 import { MODELS, withRetry, ai } from "./_ai.js"
-import { shortenBatch, ruleShorten, SHORT_BATCH } from "./_shorten.js"
+import {
+    shortenBatch,
+    ruleShorten,
+    SHORT_BATCH,
+    shortenClassBatch,
+    ruleShortClass,
+} from "./_shorten.js"
 import { setCors } from "./_cors.js"
 import {
     canvasAllowed,
@@ -566,6 +572,34 @@ async function handleShortenBackfill(req, res, body) {
     const limit = Math.max(1, Math.min(100, Number((body && body.limit) || 50)))
     const db = svc()
 
+    // Classes first, and all of them: a school timetable is tiny, and the
+    // dictionary places almost every name without a model call, so this is
+    // effectively free. Assignment squares show the class label, so having the
+    // classes named before the assignments avoids a visible gap.
+    let classesNamed = 0
+    const classSample = []
+    {
+        const { data: cls } = await db
+            .from("classes")
+            .select("id, name")
+            .is("short_name", null)
+            .limit(200)
+        if (cls && cls.length) {
+            const names = await shortenClassBatch(cls.map((c) => c.name))
+            for (let i = 0; i < cls.length; i++) {
+                const short = names[i] || ruleShortClass(cls[i].name).short
+                const { error: ce } = await db
+                    .from("classes")
+                    .update({ short_name: short })
+                    .eq("id", cls[i].id)
+                if (!ce) {
+                    classesNamed++
+                    if (classSample.length < 10) classSample.push({ was: cls[i].name, now: short })
+                }
+            }
+        }
+    }
+
     const { data: rows, error } = await db
         .from("assignments")
         .select("id, title, class_id")
@@ -573,7 +607,20 @@ async function handleShortenBackfill(req, res, body) {
         .order("created_at", { ascending: true })
         .limit(limit)
     if (error) return res.status(500).json({ error: error.message })
-    if (!rows || !rows.length) return res.status(200).json({ named: 0, remaining: 0, done: true })
+    if (!rows || !rows.length) {
+        const { count: cRemain } = await db
+            .from("classes")
+            .select("id", { count: "exact", head: true })
+            .is("short_name", null)
+        return res.status(200).json({
+            named: 0,
+            remaining: 0,
+            done: !cRemain,
+            classesNamed,
+            classesRemaining: typeof cRemain === "number" ? cRemain : null,
+            classSample,
+        })
+    }
 
     const classNames = {}
     const classIds = [...new Set(rows.map((r) => r.class_id).filter(Boolean))]
@@ -605,10 +652,18 @@ async function handleShortenBackfill(req, res, body) {
         .select("id", { count: "exact", head: true })
         .is("short_title", null)
 
+    const { count: cRemain } = await db
+        .from("classes")
+        .select("id", { count: "exact", head: true })
+        .is("short_name", null)
+
     return res.status(200).json({
         named: wrote,
         remaining: typeof count === "number" ? count : null,
-        done: !count,
+        done: !count && !cRemain,
+        classesNamed,
+        classesRemaining: typeof cRemain === "number" ? cRemain : null,
+        classSample,
         sample,
     })
 }

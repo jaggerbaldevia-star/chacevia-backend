@@ -257,3 +257,157 @@ export async function shortenBatch(items) {
     }
     return out
 }
+
+// =====================  CLASS NAMES  =====================
+// "Sustainable Fashion Design" -> "fashion". Eight characters at most, because
+// this sits in the corner of a square in a dotted display font.
+//
+// Subject-dictionary first, model second, and only for the ones the dictionary
+// cannot place. A school timetable is a small, stable vocabulary: guessing
+// "chemistry" -> "chem" needs no intelligence, and the names have to be stable
+// because the same class must read the same on every square.
+
+export const CLASS_MAX_CHARS = 8
+
+// Level and framing words that are never the subject.
+const CLASS_NOISE = [
+    "accelerated", "advanced", "honors", "honours", "ap", "ib", "intro",
+    "introduction", "foundations", "intermediate", "beginning", "beginner",
+    "general", "basic", "elementary", "fundamentals", "principles", "topics",
+    "survey", "seminar", "studies", "study", "course", "period", "block",
+    "sustainable", "applied", "modern", "contemporary", "creative", "and",
+    "with", "in", "of", "to", "the", "for", "a", "an",
+]
+
+// Ordered by specificity: the FIRST match wins, so "fashion" beats "design" in
+// "Sustainable Fashion Design" while "Graphic Design and Typography" still
+// lands on "design".
+const SUBJECTS = [
+    ["fashion", ["fashion", "apparel", "textile"]],
+    ["chem", ["chemistry", "chemical", "chem"]],
+    ["physics", ["physics"]],
+    ["bio", ["biology", "anatomy", "physiology"]],
+    ["science", ["environmental science", "earth science", "science"]],
+    ["spanish", ["spanish"]],
+    ["french", ["french"]],
+    ["latin", ["latin"]],
+    ["mandarin", ["mandarin", "chinese"]],
+    ["german", ["german"]],
+    ["history", ["history", "civics", "government"]],
+    ["english", ["english", "literature", "composition", "writing"]],
+    ["precalc", ["pre-calculus", "precalculus", "pre calculus"]],
+    ["calculus", ["calculus"]],
+    ["algebra", ["algebra"]],
+    ["geometry", ["geometry"]],
+    ["stats", ["statistics", "stats", "probability"]],
+    ["math", ["mathematics", "math"]],
+    ["religion", ["christian", "believer", "theology", "bible", "religion"]],
+    ["finance", ["financial", "finance", "economics", "econ", "business"]],
+    ["coding", ["computational", "computer", "programming", "coding", "software"]],
+    ["wood", ["woodworking", "woodwork", "carpentry"]],
+    ["film", ["film", "cinema", "video"]],
+    ["dance", ["dance"]],
+    ["debate", ["debate", "rhetoric", "forensics"]],
+    ["theater", ["theater", "theatre", "drama"]],
+    ["music", ["music", "band", "orchestra", "choir"]],
+    ["art", ["studio art", "studio arts", "ceramics", "painting", "drawing", "art"]],
+    ["design", ["typography", "graphic design", "design"]],
+    ["pe", ["physical education", "gym", "athletics"]],
+    ["health", ["health", "wellness"]],
+    ["psych", ["psychology", "sociology"]],
+]
+
+/**
+ * Short class name by dictionary.
+ *
+ * `confident` is what decides whether the model gets asked: a dictionary hit is
+ * as good as it gets, and a generic truncation is where a model earns its keep.
+ */
+export function ruleShortClass(name) {
+    const raw = tidy(name)
+    if (!raw) return { short: "class", confident: false }
+
+    // Canvas names are often "History 10 - Deveau"; the subject is before the dash.
+    const head = raw.split(/\s[-–—]\s/)[0]
+    const hay = " " + head.toLowerCase().replace(/[^a-z0-9+#]+/g, " ").trim() + " "
+
+    for (const [short, words] of SUBJECTS) {
+        for (const w of words) {
+            if (hay.indexOf(" " + w + " ") !== -1) return { short, confident: true }
+        }
+    }
+
+    // No known subject: drop the framing words and numbers, keep the first real
+    // word. Usable, but flagged so the model gets a look.
+    const words = hay
+        .trim()
+        .split(/\s+/)
+        .filter((w) => w && !CLASS_NOISE.includes(w) && !/^\d+$/.test(w))
+    const pick = words[0] || tidy(head).toLowerCase().split(/\s+/)[0] || "class"
+    return { short: pick.slice(0, CLASS_MAX_CHARS), confident: false }
+}
+
+const CLASS_RULES = `You shorten school class names for a tiny label on a square.
+
+For each numbered class, reply with ONE word: the SUBJECT, lowercase, at most
+${CLASS_MAX_CHARS} characters. Drop level words (Honors, AP, Accelerated,
+Intermediate, Introduction to, Foundations in), course numbers, and teacher names.
+
+Examples:
+"Algebra 2" -> "algebra"
+"Spanish 3" -> "spanish"
+"Chemistry" -> "chem"
+"Environmental Science" -> "science"
+"History 10" -> "history"
+"English 10" -> "english"
+"Sustainable Fashion Design" -> "fashion"
+"Graphic Design and Typography" -> "design"
+
+Reply with ONE JSON object only:
+{"names":{"1":"algebra","2":"fashion"}}
+
+Every number you were given must appear as a key.`
+
+/**
+ * Short names for many classes. Same contract as shortenBatch: same length, same
+ * order, never a gap.
+ *
+ * The model is only asked about the ones the dictionary could not place, so a
+ * normal timetable costs nothing at all.
+ */
+export async function shortenClassBatch(names) {
+    const list = Array.isArray(names) ? names : []
+    const ruled = list.map((n) => ruleShortClass(n))
+    const out = ruled.map((r) => r.short)
+    if (!list.length || !process.env.OPENAI_API_KEY) return out
+
+    const unsure = []
+    ruled.forEach((r, i) => {
+        if (!r.confident) unsure.push(i)
+    })
+    if (!unsure.length) return out
+
+    for (let start = 0; start < unsure.length; start += SHORT_BATCH) {
+        const idxs = unsure.slice(start, start + SHORT_BATCH)
+        const lines = idxs
+            .map((idx, i) => i + 1 + '. "' + tidy(list[idx]) + '"')
+            .join("\n")
+        try {
+            const { data } = await askJson({
+                model: MODELS.cheap,
+                instructions: CLASS_RULES,
+                input: lines,
+                label: "shorten-class",
+            })
+            const got = (data && data.names) || {}
+            idxs.forEach((idx, i) => {
+                let v = tidy(got[String(i + 1)]).toLowerCase()
+                v = v.replace(/[^a-z0-9+#]+/g, "")
+                if (v) out[idx] = v.slice(0, CLASS_MAX_CHARS)
+            })
+        } catch (e) {
+            console.warn("[shorten-class] batch failed, keeping rule names:", e && e.message)
+        }
+    }
+    return out
+}
