@@ -224,6 +224,9 @@ async function handleStatus(req, res) {
 // ---------------------------------------------------------------------
 // rc-webhook — RevenueCat calls this
 // ---------------------------------------------------------------------
+const UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 async function handleRcWebhook(req, res) {
     if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." })
 
@@ -246,7 +249,14 @@ async function handleRcWebhook(req, res) {
 
     // RevenueCat's app_user_id IS the Supabase user id, because the app logs in
     // to RevenueCat with it. original_app_user_id covers an aliased subscriber.
-    const userId = ev.app_user_id || ev.original_app_user_id || null
+    const rawUserId = ev.app_user_id || ev.original_app_user_id || null
+    // billing_events.user_id is a uuid, so a non-uuid app_user_id makes the
+    // INSERT throw a type error, which used to come back as a 500 — and
+    // RevenueCat retries 500s. Its dashboard "Send test event" button sends a
+    // dummy id like "test_app_user_id", so the very first thing anyone does
+    // after wiring the webhook up would have failed and then retried forever.
+    // Anything that is not a uuid is recorded with a null user and accepted.
+    const userId = UUID_RE.test(String(rawUserId || "")) ? String(rawUserId) : null
     const db = svc()
 
     // Idempotency first: the event id is the primary key, so a retry conflicts
@@ -265,7 +275,11 @@ async function handleRcWebhook(req, res) {
         return res.status(500).json({ error: "Could not record event." })
     }
 
-    if (!userId) return res.status(200).json({ ok: true, skipped: "no app_user_id" })
+    if (!userId)
+        return res.status(200).json({
+            ok: true,
+            skipped: rawUserId ? "app_user_id is not a uuid" : "no app_user_id",
+        })
 
     try {
         const result = await applyRevenueCatEvent(db, ev, userId)
