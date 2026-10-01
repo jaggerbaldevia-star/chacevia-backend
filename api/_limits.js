@@ -50,8 +50,35 @@ const LIMITS = {
 //
 // 100 chat messages a day is far more than a student sends and still bounds the
 // worst case: without this, 60/hour is 1,440/day per account.
+// Free vs Premium, enforced HERE. A cap the client could change is not a cap,
+// and the paywall in the UI is a signpost, not a gate.
+//
+// The premium number is the pre-existing abuse ceiling, deliberately unchanged:
+// "unlimited" means no product limit, not no safety limit.
 const DAILY_LIMITS = {
     "rocco-chat": 100,
+}
+const FREE_DAILY_LIMITS = {
+    "rocco-chat": 10,
+}
+
+// One entitlement read, and only for endpoints whose cap actually differs by
+// plan. Expiry is evaluated against now(), so a lapsed trial drops to the free
+// cap on its next message without anything having to run on a schedule.
+async function isUserPremium(userId) {
+    try {
+        const { resolvePremium } = await import("./_premium.js")
+        const { data } = await svc()
+            .from("entitlements")
+            .select("is_premium, source, expires_at, will_renew, product_id")
+            .eq("user_id", userId)
+            .maybeSingle()
+        return resolvePremium(data || null).isPremium
+    } catch (e) {
+        // Could not tell. Fail OPEN to the free cap rather than locking a paying
+        // user out of a feature they bought — the free cap still bounds abuse.
+        return false
+    }
 }
 
 // Buckets are UTC, deliberately. The alternative is trusting a timezone sent by
@@ -105,7 +132,13 @@ export async function checkLimit(userId, endpoint) {
 
     const now = new Date()
     const hourCap = LIMITS[endpoint] || LIMITS.default
-    const dayCap = DAILY_LIMITS[endpoint] || null
+    const planned = FREE_DAILY_LIMITS[endpoint] !== undefined
+    const premium = planned ? await isUserPremium(userId) : false
+    const dayCap = planned
+        ? premium
+            ? DAILY_LIMITS[endpoint]
+            : FREE_DAILY_LIMITS[endpoint]
+        : DAILY_LIMITS[endpoint] || null
 
     let hourUsed
     let dayUsed = null
@@ -133,10 +166,14 @@ export async function checkLimit(userId, endpoint) {
             ok: false,
             status: 429,
             payload: {
-                error: `That's ${dayCap} messages today — I'm all talked out! I'll be back tomorrow. Everything else still works.`,
+                error: premium
+                    ? `That's ${dayCap} messages today — I'm all talked out! I'll be back tomorrow. Everything else still works.`
+                    : `That's your ${dayCap} messages for today! Premium makes Rocco unlimited — or come back tomorrow. Everything else still works.`,
                 rateLimited: true,
                 dailyLimit: true,
                 messagesLeftToday: 0,
+                // Lets the UI offer the paywall instead of just a dead end.
+                upgradeable: !premium,
             },
         }
     }
@@ -153,7 +190,7 @@ export async function checkLimit(userId, endpoint) {
         }
     }
 
-    return { ok: true, hourUsed, hourCap, dayUsed, dayCap, messagesLeftToday }
+    return { ok: true, hourUsed, hourCap, dayUsed, dayCap, messagesLeftToday, premium }
 }
 
 /**
