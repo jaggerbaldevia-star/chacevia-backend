@@ -66,6 +66,20 @@ const NUMBERED = [
     { re: /\bsection\s*#?\s*(\d+[a-z.]*)\b/i, as: (n) => "sec " + n },
 ]
 
+// Short course codes that ARE the distinguishing detail: "Quiz F3", "CHEM GA1",
+// "FD01 HW". A teacher who sets Quiz F1, F2 and F3 has given you the only thing
+// that tells them apart, and dropping it leaves three squares all saying "quiz".
+// One to three letters followed by one to three digits, so "unit"/"bc" and
+// decimals like "1.2" are left alone.
+const CODE_RE = /\b([a-z]{1,3}\d{1,3})\b/i
+
+// Words a name should never end on. Without this, "CHEM GA1 on 1.1, 1.2" keeps
+// its first three words and lands on "chem ga1 on".
+const STOPWORDS = new Set([
+    "on", "of", "and", "the", "a", "an", "for", "to", "in", "at", "with",
+    "due", "from", "by", "is", "are", "vs",
+])
+
 // Page ranges: "pg. 52-70", "pp 52–70", "page 52".
 const PAGES_RE =
     /\b(?:pgs?|pp|pages?|p)\.?\s*(\d+)\s*(?:[-–—]\s*(\d+))?/i
@@ -136,22 +150,31 @@ export function ruleShorten(title, className) {
     const pm = t.match(PAGES_RE)
     const pages = pm ? "pg " + pm[1] + (pm[2] ? "-" + pm[2] : "") : ""
 
+    // Only consulted when there is no unit/chapter/page to use instead, so
+    // "unit 8 quiz" never becomes "unit 8 quiz f3".
+    let code = ""
+    if (type && !numbered && !pages) {
+        const cm = head.match(CODE_RE)
+        if (cm && cm[1].toLowerCase() !== type) code = cm[1].toLowerCase()
+    }
+
     // Compose, most useful detail first.
     let out = ""
     if (numbered && type) out = numbered + " " + type
     else if (type && pages) out = type + " " + pages
     else if (numbered) out = numbered
     else if (pages) out = (type || "read") + " " + pages
-    else if (type) out = type
+    else if (type) out = code ? type + " " + code : type
     else {
         // Nothing recognisable: keep the first few real words of the title.
-        out = head
+        const words = head
             .toLowerCase()
             .replace(/[^a-z0-9 .\-]+/g, " ")
             .split(/\s+/)
             .filter(Boolean)
             .slice(0, SHORT_MAX_WORDS)
-            .join(" ")
+        while (words.length > 1 && STOPWORDS.has(words[words.length - 1])) words.pop()
+        out = words.join(" ")
     }
 
     out = tidy(out).toLowerCase().split(/\s+/).slice(0, SHORT_MAX_WORDS).join(" ")
