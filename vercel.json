@@ -71,6 +71,10 @@
     {
       "source": "/api/trial-claim",
       "destination": "/api/stripe?action=trial"
+    },
+    {
+      "source": "/api/trial-warned",
+      "destination": "/api/stripe?action=trial-warned"
     }
   ]
 }

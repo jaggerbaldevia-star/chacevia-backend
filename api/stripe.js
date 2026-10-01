@@ -402,6 +402,32 @@ async function handleTrial(req, res) {
 }
 
 // ---------------------------------------------------------------------
+// trial-warned — record that Rocco has given the day-6 heads-up
+// ---------------------------------------------------------------------
+// Stamped server-side so the warning is given once per trial, not once per app
+// launch. The client cannot choose the timestamp; it only reports that it said
+// the thing.
+async function handleTrialWarned(req, res) {
+    if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." })
+
+    const userId = await getUserId(tokenFrom(req, null))
+    if (!userId) return res.status(401).json({ error: "Please log in to use Chacevia." })
+
+    try {
+        await svc()
+            .from("trial_claims")
+            .update({ warned_at: new Date().toISOString() })
+            .eq("user_id", userId)
+            .is("warned_at", null)
+        return res.status(200).json({ ok: true })
+    } catch (err) {
+        console.error("trial warned error:", err)
+        // Not worth an error to the user — the worst case is one extra reminder.
+        return res.status(200).json({ ok: false })
+    }
+}
+
+// ---------------------------------------------------------------------
 export default async function handler(req, res) {
     setCorsHeaders(req, res)
     if (req.method === "OPTIONS") return res.status(204).end()
@@ -412,6 +438,7 @@ export default async function handler(req, res) {
     if (action === "rc-webhook") return handleRcWebhook(req, res)
     if (action === "premium") return handlePremium(req, res)
     if (action === "trial") return handleTrial(req, res)
+    if (action === "trial-warned") return handleTrialWarned(req, res)
     if (action === "status") return handleStatus(req, res)
     if (action === "checkout") return handleCheckout(req, res)
 
