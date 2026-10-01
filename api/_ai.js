@@ -15,6 +15,9 @@ import { svc } from "./_coins.js"
 export const MODELS = {
     fast: process.env.MODEL_FAST || "gpt-5.5",   // chat, short replies
     smart: process.env.MODEL_SMART || "gpt-5.5",      // research, study kits
+    // Bulk mechanical work where a mini model is indistinguishable from a big
+    // one: naming assignments, for instance. Keep this the cheapest tier.
+    cheap: process.env.MODEL_CHEAP || "gpt-5.4-mini",
 }
 
 let _client = null

@@ -17,6 +17,7 @@
 import OpenAI, { toFile } from "openai"
 import { requireCoins, svc } from "./_coins.js"
 import { MODELS, withRetry, ai } from "./_ai.js"
+import { shortenBatch, ruleShorten, SHORT_BATCH } from "./_shorten.js"
 import { setCors } from "./_cors.js"
 import {
     canvasAllowed,
@@ -478,6 +479,140 @@ async function handleCanvasDisconnect(req, res, body) {
 // Daily sweep, called by pg_cron via pg_net. Authenticated by a shared secret
 // rather than a user token, and deliberately batched: this file's maxDuration
 // is 60s and each user costs one outbound fetch to their school.
+// ---------------------------------------------------------------------
+// action=shorten  — name assignments the student typed in themselves.
+//
+// The Canvas importer names its own rows as they arrive. This covers the other
+// path: the app inserts an assignment directly, then calls this once. Free, for
+// the same reason reminder-text is: it is part of setting up an assignment, not
+// a separate AI feature a student chose to spend on.
+//
+// Already-named rows are returned as they are, so a repeated call costs nothing.
+async function handleShorten(req, res, body) {
+    const guard = await requireCoins(req, body, 0, "shorten")
+    if (!guard.ok) return res.status(guard.status).json(guard.payload)
+    const userId = guard.userId
+
+    const raw = (body && (body.ids || (body.id ? [body.id] : []))) || []
+    const ids = [...new Set(raw.map(String).filter(Boolean))].slice(0, SHORT_BATCH)
+    if (!ids.length) return res.status(400).json({ error: "Nothing to name." })
+
+    const db = svc()
+    // Scoped to the caller's own rows: the id came from the client, so it is a
+    // request, not a fact. A row belonging to anyone else simply is not found.
+    const { data: rows, error } = await db
+        .from("assignments")
+        .select("id, title, short_title, class_id")
+        .eq("user_id", userId)
+        .in("id", ids)
+    if (error) return res.status(500).json({ error: "Couldn't read those." })
+    if (!rows || !rows.length) return res.status(200).json({ shorts: {} })
+
+    const classNames = {}
+    const classIds = [...new Set(rows.map((r) => r.class_id).filter(Boolean))]
+    if (classIds.length) {
+        const { data: cls } = await db
+            .from("classes")
+            .select("id, name")
+            .eq("user_id", userId)
+            .in("id", classIds)
+        for (const c of cls || []) classNames[c.id] = c.name
+    }
+
+    const shorts = {}
+    const todo = []
+    for (const r of rows) {
+        if (r.short_title) shorts[r.id] = r.short_title
+        else todo.push(r)
+    }
+
+    if (todo.length) {
+        let named
+        try {
+            named = await shortenBatch(
+                todo.map((r) => ({ title: r.title, className: classNames[r.class_id] }))
+            )
+        } catch (e) {
+            named = todo.map((r) => ruleShorten(r.title, classNames[r.class_id]))
+        }
+        for (let i = 0; i < todo.length; i++) {
+            const name = named[i] || ruleShorten(todo[i].title, classNames[todo[i].class_id])
+            shorts[todo[i].id] = name
+            // One write each. A handful of rows at a time, so this is cheaper
+            // than building a bulk upsert that has to restate every column.
+            await db
+                .from("assignments")
+                .update({ short_title: name })
+                .eq("id", todo[i].id)
+                .eq("user_id", userId)
+        }
+    }
+
+    return res.status(200).json({ shorts })
+}
+
+// ---------------------------------------------------------------------
+// action=shorten-backfill — names every existing assignment that has no name.
+//
+// Guarded by CRON_SECRET rather than a user login: it works across all users, so
+// it must not be reachable by anyone's app session. Pages through the table so
+// one invocation cannot run long enough to be killed mid-write; call it until it
+// reports remaining 0.
+async function handleShortenBackfill(req, res, body) {
+    const secret = process.env.CRON_SECRET || ""
+    const given = (req.headers && (req.headers["x-cron-secret"] || req.headers["X-Cron-Secret"])) || ""
+    if (!secret || given !== secret) return res.status(401).json({ error: "Unauthorized." })
+
+    const limit = Math.max(1, Math.min(100, Number((body && body.limit) || 50)))
+    const db = svc()
+
+    const { data: rows, error } = await db
+        .from("assignments")
+        .select("id, title, class_id")
+        .is("short_title", null)
+        .order("created_at", { ascending: true })
+        .limit(limit)
+    if (error) return res.status(500).json({ error: error.message })
+    if (!rows || !rows.length) return res.status(200).json({ named: 0, remaining: 0, done: true })
+
+    const classNames = {}
+    const classIds = [...new Set(rows.map((r) => r.class_id).filter(Boolean))]
+    if (classIds.length) {
+        const { data: cls } = await db.from("classes").select("id, name").in("id", classIds)
+        for (const c of cls || []) classNames[c.id] = c.name
+    }
+
+    const named = await shortenBatch(
+        rows.map((r) => ({ title: r.title, className: classNames[r.class_id] }))
+    )
+
+    let wrote = 0
+    const sample = []
+    for (let i = 0; i < rows.length; i++) {
+        const name = named[i] || ruleShorten(rows[i].title, classNames[rows[i].class_id])
+        const { error: upErr } = await db
+            .from("assignments")
+            .update({ short_title: name })
+            .eq("id", rows[i].id)
+        if (!upErr) {
+            wrote++
+            if (sample.length < 12) sample.push({ was: rows[i].title, now: name })
+        }
+    }
+
+    const { count } = await db
+        .from("assignments")
+        .select("id", { count: "exact", head: true })
+        .is("short_title", null)
+
+    return res.status(200).json({
+        named: wrote,
+        remaining: typeof count === "number" ? count : null,
+        done: !count,
+        sample,
+    })
+}
+
 async function handleCanvasCron(req, res) {
     if (!canvasEnabled()) return res.status(404).json({ error: "Not found." })
     const secret = process.env.CRON_SECRET || ""
@@ -540,5 +675,7 @@ export default async function handler(req, res) {
     if (action === "canvas-status") return handleCanvasStatus(req, res, body)
     if (action === "canvas-disconnect") return handleCanvasDisconnect(req, res, body)
     if (action === "canvas-cron") return handleCanvasCron(req, res)
+    if (action === "shorten") return handleShorten(req, res, body)
+    if (action === "shorten-backfill") return handleShortenBackfill(req, res, body)
     return handleScheduleExtract(req, res, body)
 }

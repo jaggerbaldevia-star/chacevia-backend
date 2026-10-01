@@ -13,6 +13,7 @@ import dns from "dns"
 import https from "https"
 import net from "net"
 import ICAL from "ical.js"
+import { shortenBatch, ruleShorten } from "./_shorten.js"
 
 // Feature flag. Absent or not "1" and every Canvas action 404s, so while this
 // is hidden the endpoints do not exist as far as the outside world is
@@ -622,7 +623,48 @@ export async function importItems(db, userId, items, feedHost) {
         classIdByName[name] = created.id
     }
 
-    const rows = items.map((i) => ({
+    // Short, friendly names for the squares. Generated ONCE per assignment:
+    // anything we have already named keeps its name, so the six-hourly cron
+    // re-sync costs nothing instead of re-paying to rename all 31 items every
+    // time. Every row carries a value because PostgREST needs one shape for the
+    // whole chunk, and an absent key on an upsert would blank the column.
+    const shortByIdx = {}
+    try {
+        const { data: already } = await db
+            .from("assignments")
+            .select("external_id, short_title")
+            .eq("user_id", userId)
+            .eq("source", "canvas")
+        const have = {}
+        for (const r of already || []) {
+            if (r.external_id && r.short_title) have[r.external_id] = r.short_title
+        }
+
+        const todo = []
+        items.forEach((i, idx) => {
+            const kept = have[i.external_id]
+            if (kept) shortByIdx[idx] = kept
+            else todo.push(idx)
+        })
+
+        if (todo.length) {
+            const named = await shortenBatch(
+                todo.map((idx) => ({
+                    title: items[idx].title,
+                    className: items[idx].course,
+                }))
+            )
+            todo.forEach((idx, k) => {
+                shortByIdx[idx] = named[k] || ruleShorten(items[idx].title, items[idx].course)
+            })
+        }
+    } catch (e) {
+        // Naming is a nicety; importing the work is not. Fall back to the
+        // deterministic shortener rather than failing the whole sync.
+        console.warn("[canvas] short names unavailable:", e && e.message)
+    }
+
+    const rows = items.map((i, idx) => ({
         user_id: userId,
         class_id: i.course ? classIdByName[i.course] || null : null,
         title: i.title,
@@ -632,6 +674,7 @@ export async function importItems(db, userId, items, feedHost) {
         // Canvas puts the assignment's own page in the event's URL property, so
         // "open in canvas" can land on the assignment instead of the dashboard.
         url: safeCanvasUrl(i.url, feedHost),
+        short_title: shortByIdx[idx] || ruleShorten(i.title, i.course),
     }))
 
     let imported = 0

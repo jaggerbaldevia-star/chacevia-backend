@@ -75,6 +75,14 @@
     {
       "source": "/api/trial-warned",
       "destination": "/api/stripe?action=trial-warned"
+    },
+    {
+      "source": "/api/shorten",
+      "destination": "/api/schedule-extract?action=shorten"
+    },
+    {
+      "source": "/api/shorten-backfill",
+      "destination": "/api/schedule-extract?action=shorten-backfill"
     }
   ]
 }
