@@ -701,7 +701,35 @@ export async function importItems(db, userId, items, feedHost) {
         imported += chunk.length
     }
 
-    return { imported, classes: courses.length }
+    // Work the teacher deleted. The feed is the whole truth for canvas-sourced
+    // assignments, so anything of ours that is no longer in it no longer exists.
+    //
+    // Guarded on a NON-EMPTY feed: a parse that yields zero assignments is far
+    // more likely a broken fetch than a teacher deleting an entire term, and
+    // without this guard that one bad sync would wipe every assignment the
+    // student has. Hand-made work is never touched — the filter is on
+    // source=canvas.
+    let removed = 0
+    if (rows.length) {
+        const keep = rows.map((r) => r.external_id).filter(Boolean)
+        if (keep.length) {
+            const { data: gone, error: delErr } = await db
+                .from("assignments")
+                .delete()
+                .eq("user_id", userId)
+                .eq("source", "canvas")
+                .not("external_id", "in", "(" + keep.map((k) => '"' + k + '"').join(",") + ")")
+                .select("id")
+            if (delErr) {
+                // Never fail a sync over tidying up.
+                console.warn("[canvas] could not reconcile deletions:", delErr.message)
+            } else {
+                removed = (gone || []).length
+            }
+        }
+    }
+
+    return { imported, classes: courses.length, removed }
 }
 
 /** Everything Canvas put there, and nothing the user made themselves. */

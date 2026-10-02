@@ -342,6 +342,9 @@ async function handleCanvasConnect(req, res, body) {
         // Import BEFORE storing. A link that doesn't work shouldn't be saved,
         // and a user who pastes a bad one should find out now rather than
         // discovering an empty homework screen later.
+        //
+        // No `link` row exists yet on this path — the insert below creates it,
+        // and it already carries body.tz.
         result = await runSync(db, userId, feedUrl, body && body.tz)
     } catch (err) {
         return canvasFailure(res, err, "connect")
@@ -407,7 +410,13 @@ async function handleCanvasSync(req, res, body) {
     let result
     try {
         const feedUrl = parseFeedUrl(decryptFeed(link))
-        result = await runSync(db, userId, feedUrl, body && body.tz)
+        const tz = (body && body.tz) || link.tz || null
+        if (tz && tz !== link.tz) {
+            // Backfill: the client only started sending this once the UTC
+            // fallback was found to be filing evening deadlines a day late.
+            await db.from("canvas_links").update({ tz }).eq("user_id", userId)
+        }
+        result = await runSync(db, userId, feedUrl, tz)
     } catch (err) {
         // A failed sync is recorded and reported, but the stored link is kept:
         // a school's Canvas being down for an afternoon is not a reason to make
@@ -668,6 +677,81 @@ async function handleShortenBackfill(req, res, body) {
     })
 }
 
+// ---------------------------------------------------------------------
+// action=canvas-feed-audit — what IS in the Canvas feed?
+//
+// Read-only, and deliberately returns NO assignment content: property names,
+// counts and shapes only. It exists to answer one question with evidence rather
+// than assumption — does an ICS calendar feed carry submission state? — without
+// anybody having to paste a feed URL into a chat window.
+//
+// CRON_SECRET-guarded because it reads one named user's feed.
+async function handleCanvasFeedAudit(req, res, body) {
+    const secret = process.env.CRON_SECRET || ""
+    const given = (req.headers && (req.headers["x-cron-secret"] || req.headers["X-Cron-Secret"])) || ""
+    if (!secret || given !== secret) return res.status(401).json({ error: "Unauthorized." })
+
+    const userId = String((body && body.userId) || "")
+    if (!userId) return res.status(400).json({ error: "userId required." })
+
+    const db = svc()
+    const { data: link } = await db
+        .from("canvas_links")
+        .select("feed_ciphertext, feed_iv, feed_tag, feed_host, tz")
+        .eq("user_id", userId)
+        .maybeSingle()
+    if (!link) return res.status(404).json({ error: "No canvas link." })
+
+    let text
+    try {
+        const feedUrl = parseFeedUrl(decryptFeed(link))
+        text = await fetchIcs(feedUrl)
+    } catch (e) {
+        return res.status(502).json({ error: String((e && e.message) || e) })
+    }
+
+    // Property names only — never values.
+    const props = {}
+    const perEvent = []
+    let inEvent = false
+    let names = null
+    for (const rawLine of String(text).split(/\r?\n/)) {
+        if (/^BEGIN:VEVENT/i.test(rawLine)) { inEvent = true; names = new Set(); continue }
+        if (/^END:VEVENT/i.test(rawLine)) {
+            inEvent = false
+            if (names) perEvent.push([...names])
+            names = null
+            continue
+        }
+        if (!inEvent || /^[ \t]/.test(rawLine)) continue
+        const name = (rawLine.split(":")[0] || "").split(";")[0].trim().toUpperCase()
+        if (!name) continue
+        props[name] = (props[name] || 0) + 1
+        if (names) names.add(name)
+    }
+
+    // Does anything in here look like submission or completion state?
+    const SUBMISSION_RE = /SUBMIT|SUBMISSION|COMPLETE|COMPLETED|TURNED|HANDED|STATUS|GRADE|SCORE|PERCENT|DONE|PARTSTAT/i
+    const suspects = Object.keys(props).filter((k) => SUBMISSION_RE.test(k))
+
+    // All-day vs timed, which decides whether a due date has a real deadline.
+    const dtstart = []
+    for (const rawLine of String(text).split(/\r?\n/)) {
+        if (/^DTSTART/i.test(rawLine)) dtstart.push(rawLine.split(":")[0])
+    }
+    const allDay = dtstart.filter((d) => /VALUE=DATE\b/i.test(d)).length
+
+    return res.status(200).json({
+        bytes: String(text).length,
+        events: perEvent.length,
+        propertyNames: Object.keys(props).sort(),
+        propertyCounts: props,
+        submissionLikeProperties: suspects,
+        dtstart: { total: dtstart.length, allDayValueDate: allDay, timed: dtstart.length - allDay },
+        tz: link.tz || null,
+    })
+}
+
 async function handleCanvasCron(req, res) {
     if (!canvasEnabled()) return res.status(404).json({ error: "Not found." })
     const secret = process.env.CRON_SECRET || ""
@@ -730,6 +814,7 @@ export default async function handler(req, res) {
     if (action === "canvas-status") return handleCanvasStatus(req, res, body)
     if (action === "canvas-disconnect") return handleCanvasDisconnect(req, res, body)
     if (action === "canvas-cron") return handleCanvasCron(req, res)
+    if (action === "canvas-feed-audit") return handleCanvasFeedAudit(req, res, body)
     if (action === "shorten") return handleShorten(req, res, body)
     if (action === "shorten-backfill") return handleShortenBackfill(req, res, body)
     return handleScheduleExtract(req, res, body)

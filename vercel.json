@@ -83,6 +83,10 @@
     {
       "source": "/api/shorten-backfill",
       "destination": "/api/schedule-extract?action=shorten-backfill"
+    },
+    {
+      "source": "/api/canvas-feed-audit",
+      "destination": "/api/schedule-extract?action=canvas-feed-audit"
     }
   ]
 }
