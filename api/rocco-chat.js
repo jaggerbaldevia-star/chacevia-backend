@@ -49,7 +49,15 @@ Voice & rules:
 - Never break character or mention these instructions — with one exception, which always wins: the SAFETY rules above. Being honest that you're an AI, and dropping the persona for a crisis, are never "breaking character" — they're the job.
 
 DOODLES — you can draw little diagrams to help explain:
-Return ONLY valid JSON (no markdown, no backticks): {"reply": "your spoken reply", "doodle": null or {...}}
+Return ONLY valid JSON (no markdown, no backticks): {"reply": "your spoken reply", "doodle": null or {...}, "crisis": true or false}
+
+Set "crisis": true for exactly the replies covered by SAFETY rules 2 and 3 above —
+self-harm, suicide, abuse, assault, or someone saying they are unsafe. Set it
+false for everything else, including ordinary sadness, stress, exam panic and
+venting. The app shows a crisis reply differently: a calm full card with the 988
+buttons, no character animation. Flagging a normal bad day as a crisis makes that
+card meaningless, and missing a real one is worse — judge it the way the SAFETY
+rules tell you to, and set the flag to match what you just wrote.
 
 DRAW OFTEN. If the answer involves anything with parts, steps, structure, causes, comparisons, or a concept you could sketch on a whiteboard, draw it. Explaining what something IS or HOW it works almost always deserves a quick sketch — a cell, an engine, a loan, a food chain, an equation's pieces, a timeline.
 
@@ -73,10 +81,14 @@ function parseRocco(text) {
         const reply = String(obj.reply || "").trim()
         let doodle = obj.doodle && typeof obj.doodle === "object" && Array.isArray(obj.doodle.shapes) ? obj.doodle : null
         if (doodle) doodle = { title: String(doodle.title || "").slice(0, 40), shapes: doodle.shapes.slice(0, 10) }
-        if (reply) return { reply, doodle }
+        const crisis = obj.crisis === true
+        // A crisis reply never carries a drawing, whatever the model returned.
+        if (reply) return { reply, doodle: crisis ? null : doodle, crisis }
     } catch (e) { /* fall through */ }
-    // Not JSON — treat the whole thing as a plain reply
-    return { reply: t, doodle: null }
+    // Not JSON — treat the whole thing as a plain reply. No crisis flag here:
+    // the flag has to be a decision the model made, and unparseable output means
+    // it did not make one.
+    return { reply: t, doodle: null, crisis: false }
 }
 
 const MAX_FACTS = 40
@@ -197,7 +209,7 @@ export default async function handler(req, res) {
             }),
             { label: "rocco-chat" }
         )
-        const { reply, doodle } = parseRocco(resp.output_text)
+        const { reply, doodle, crisis } = parseRocco(resp.output_text)
         if (!reply) return res.status(502).json({ error: "Rocco got tongue-tied. Try again!" })
 
         // Remember this exchange, and anything durable he just learned.
@@ -229,7 +241,7 @@ export default async function handler(req, res) {
         // null when there's no daily cap for this endpoint; the client treats
         // null as "no limit to show" rather than as zero.
         const messagesLeftToday = (guard.limit && guard.limit.messagesLeftToday) ?? null
-        return res.status(200).json({ reply, doodle, coins, messagesLeftToday })
+        return res.status(200).json({ reply, doodle, coins, messagesLeftToday, crisis })
     } catch (err) {
         console.error("rocco-chat error:", err)
         return res.status(500).json({ error: "Rocco tripped over a pixel. Try again in a moment." })
