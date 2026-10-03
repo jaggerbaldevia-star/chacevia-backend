@@ -53,6 +53,38 @@ RevenueCat webhook secrets, `CRON_SECRET`, API keys and tokens alike.
 Keep each entry to a few lines. It is a log Jagger skims to remember where
 things stand, not a changelog or a report.
 
+## Apple and RevenueCat accounts
+
+Direct access to App Store Connect and RevenueCat means some actions are no
+longer reversible by editing code. These are **never** done without an explicit
+yes, even when a task seems to imply them:
+
+- **Submitting anything for review.** Not an app version, not an in-app purchase,
+  not a metadata change that triggers review. Saving a draft is fine; pressing
+  submit is not.
+- **Signing or accepting any agreement.** Paid Apps, tax forms, developer terms.
+- **Changing bank, tax or payout details.** Read them if a diagnosis needs it;
+  never edit them.
+- **Deleting or disabling live products, offerings or entitlements.** Creating
+  and correcting is fine; removing something customers can already buy is not.
+
+Price, availability, localization and review-screenshot edits on a product that
+has never shipped are ordinary work — but **show the list of changes first** and
+apply them only once he has seen it.
+
+## Credentials
+
+- Keys live outside every repo. `.p8` files go in `~/.appstoreconnect/`, `chmod
+  600`, directory `chmod 700`.
+- API keys go in env or MCP config, never in a repo, never in
+  `~/Desktop/chacevia-status.md`, never in a commit message.
+- Never print a key's contents — not to the terminal, not into a file, not in a
+  reply. Identify keys by filename and id only.
+- Two different Apple `.p8` types exist and are not interchangeable:
+  `AuthKey_<id>.p8` is an **App Store Connect API** key (the one that carries a
+  role like App Manager), `SubscriptionKey_<id>.p8` is an **In-App Purchase** key
+  for StoreKit. Check which one is in hand before wiring anything up.
+
 ## Supabase is production, with real users
 
 Five accounts, real data. `canvas_links` has RLS on with zero policies by
