@@ -23,6 +23,9 @@ const ALLOWED = [
     "https://adored-powerpoint-102797.framer.app",
     "https://chacevia.com",
     "https://www.chacevia.com",
+    // Standalone build of the Framer component for testing on a phone before
+    // publishing (see the status log, 2026-10-04). Real backend, real data.
+    "https://chacevia-preview.vercel.app",
 ]
 
 // Extra origins without a deploy: set ALLOWED_ORIGINS in Vercel to a
