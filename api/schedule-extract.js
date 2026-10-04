@@ -25,6 +25,7 @@ import {
     ruleShortClass,
 } from "./_shorten.js"
 import { setCors } from "./_cors.js"
+import { dispatch, makeStore, sendExpo } from "./_reminders.js"
 import {
     canvasAllowed,
     canvasEnabled,
@@ -797,6 +798,24 @@ async function handleCanvasCron(req, res) {
     return res.status(200).json({ ok, failed, considered: (due || []).length })
 }
 
+// ---------------------------------------------------------------------
+// reminder-dispatch — pg_cron calls this once a minute (see api/_reminders.js)
+// ---------------------------------------------------------------------
+// Merged in here, like canvas-cron, to stay under Vercel's function limit.
+async function handleReminderDispatch(req, res) {
+    const secret = process.env.CRON_SECRET || ""
+    const given = (req.headers && (req.headers["x-cron-secret"] || req.headers["X-Cron-Secret"])) || ""
+    if (!secret || given !== secret) return res.status(401).json({ error: "Unauthorized." })
+    try {
+        const summary = await dispatch({ store: makeStore(svc()), send: sendExpo })
+        if (summary.claimed || summary.afterClass || summary.signOffs) console.log("reminder-dispatch", JSON.stringify(summary))
+        return res.status(200).json({ ok: true, ...summary })
+    } catch (err) {
+        console.error("reminder-dispatch error:", err)
+        return res.status(500).json({ error: "Dispatch failed." })
+    }
+}
+
 export default async function handler(req, res) {
     setCorsHeaders(req, res)
     if (req.method === "OPTIONS") return res.status(204).end()
@@ -814,6 +833,7 @@ export default async function handler(req, res) {
     if (action === "canvas-status") return handleCanvasStatus(req, res, body)
     if (action === "canvas-disconnect") return handleCanvasDisconnect(req, res, body)
     if (action === "canvas-cron") return handleCanvasCron(req, res)
+    if (action === "reminder-dispatch") return handleReminderDispatch(req, res)
     if (action === "canvas-feed-audit") return handleCanvasFeedAudit(req, res, body)
     if (action === "shorten") return handleShorten(req, res, body)
     if (action === "shorten-backfill") return handleShortenBackfill(req, res, body)

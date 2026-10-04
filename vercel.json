@@ -87,6 +87,10 @@
     {
       "source": "/api/canvas-feed-audit",
       "destination": "/api/schedule-extract?action=canvas-feed-audit"
+    },
+    {
+      "source": "/api/reminder-dispatch",
+      "destination": "/api/schedule-extract?action=reminder-dispatch"
     }
   ]
 }
