@@ -63,14 +63,18 @@ export async function requireCoins(req, body, cost, endpoint) {
     const userId = await getUserId(tokenFrom(req, body))
     if (!userId) return { ok: false, status: 401, payload: { error: "Please log in to use Chacevia." } }
 
+    // The limit check and the balance read are independent, so they go out
+    // together: one round trip instead of two before any real work starts.
     let limit = null
-    if (endpoint) {
-        const { checkLimit } = await import("./_limits.js")
-        limit = await checkLimit(userId, endpoint)
+    const [lim, balance] = await Promise.all([
+        endpoint ? import("./_limits.js").then(({ checkLimit }) => checkLimit(userId, endpoint)) : null,
+        getBalance(userId),
+    ])
+    if (lim) {
+        limit = lim
         if (!limit.ok) return limit
     }
 
-    const balance = await getBalance(userId)
     if (balance < cost) return { ok: false, status: 402, payload: { error: "Not enough coins.", needCoins: true, coins: balance } }
     // `limit` rides along so an endpoint can tell the client what's left —
     // the client can't read usage_counters itself (RLS denies it by design).
