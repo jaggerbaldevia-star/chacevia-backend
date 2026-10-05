@@ -34,6 +34,9 @@ export function paperFacts({ now, tz, name, signupAt, classes, pattern, rows, ye
         time: clock12(r.start),
     }))
     const schoolDay = todays.length > 0
+    // No classes saved means we don't know whether there's school; only a
+    // saved schedule with nothing on today is a day off.
+    const hasSchedule = classes.length > 0
     const schoolEnd = schoolDay ? Math.max(...todays.map(endOf)) : null
 
     const dueToday = due(today)
@@ -83,6 +86,7 @@ export function paperFacts({ now, tz, name, signupAt, classes, pattern, rows, ye
         dateLabel: `${DOW[wd]}, ${MON[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`,
         issue,
         schoolDay,
+        hasSchedule,
         schedule,
         firstClass: todays[0] ? { name: String(todays[0].cls.short_name || todays[0].cls.name || "").toLowerCase(), time: clock12(todays[0].start) } : null,
         dueToday: dueToday.map((r) => ({ title: r.short_title || r.title, cls: className.get(r.class_id) || null })),
@@ -127,7 +131,7 @@ export function marketRows(f) {
 export function introText(f) {
     const parts = []
     if (f.firstClass) parts.push(`Your day starts with ${f.firstClass.name} at ${f.firstClass.time}.`)
-    else parts.push(`No classes today.`)
+    else if (f.hasSchedule) parts.push(`No classes today.`)
     if (f.dueToday.length === 1) parts.push(`${f.dueToday[0].title} is due today.`)
     else if (f.dueToday.length > 1) parts.push(`${f.dueToday.length} things are due today, starting with ${f.dueToday[0].title}.`)
     else parts.push(`Nothing is due today.`)
@@ -137,7 +141,7 @@ export function introText(f) {
 
 /** Pure. The ticker: world headlines plus one line about their week. */
 export function tickerLines(f, news) {
-    const own = !f.schoolDay && !f.dueToday.length
+    const own = f.hasSchedule && !f.schoolDay && !f.dueToday.length
         ? `YOUR ${f.dayFull}: FREE`
         : f.heavy && f.heavy.n >= 3
             ? `YOUR ${f.heavy.full}: HEAVY`
@@ -148,7 +152,7 @@ export function tickerLines(f, news) {
 /** Pure. A complete front page with no model at all. */
 export function fallbackFront(f) {
     const who = f.name ? `Sources close to ${f.name}` : "Sources"
-    if (!f.schoolDay && !f.dueToday.length) {
+    if (f.hasSchedule && !f.schoolDay && !f.dueToday.length) {
         return { headline: "LOCAL STUDENT GRANTED ENTIRE DAY OFF", highlight: "ENTIRE", deck: `${who} confirm no classes and nothing due. Experts recommend snacks.`, forecast: forecastText(f) }
     }
     if (!f.dueToday.length) {
@@ -180,7 +184,7 @@ Return ONLY JSON: {"headline": "...", "highlight": "...", "deck": "...", "foreca
 
 Rules:
 - Use ONLY the facts given. Never invent a class, assignment, time, number, teacher or event. Mention at most the assignment titles listed.
-- If there is no school today, the joke is about the free day. Never invent homework or classes.
+- If "School today" is "no", the joke is about the free day. If it's "unknown", say nothing about school either way. Never invent homework or classes.
 - Use the first name only if one is given; otherwise say "local student".
 - Never mention grades, scores, failing, weight, bodies, looks, crushes, dating, family, money, health, feelings, or anything private. Never be mean or sarcastic about the reader.`
 
@@ -188,7 +192,7 @@ Rules:
 export async function writeFront(f) {
     const facts = [
         `First name: ${f.name || "(none)"}`,
-        `Today: ${f.dayFull}. School today: ${f.schoolDay ? "yes" : "no"}.`,
+        `Today: ${f.dayFull}. School today: ${f.schoolDay ? "yes" : f.hasSchedule ? "no" : "unknown (they haven't saved their classes, so never say whether there's school)"}.`,
         f.schedule.length ? `Classes today: ${f.schedule.map((s) => `${s.label} at ${s.time}`).join(", ")}` : "Classes today: none",
         `Due today (${f.dueToday.length}): ${f.dueToday.map((x) => x.title + (x.cls ? ` (${x.cls})` : "")).join("; ") || "nothing"}`,
         `Due tomorrow (${f.dueTomorrow.length}): ${f.dueTomorrow.map((x) => x.title).join("; ") || "nothing"}`,
@@ -244,6 +248,7 @@ export function assemble(f, front, news) {
         marketRaw: f.raw,
         intro: introText(f),
         schedule: f.schedule,
+        hasSchedule: f.hasSchedule,
         ticker: tickerLines(f, news),
         news,
         week: { label: f.weekLabel, days: f.week.map(({ d, n, today, heavy }) => ({ d, n, today, heavy })) },

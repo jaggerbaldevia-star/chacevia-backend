@@ -42,6 +42,14 @@ test("market arrows compare with yesterday's paper, and only then", () => {
     ])
 })
 
+test("no classes saved: nothing is said about school either way", () => {
+    const f = paperFacts({ now: WED_6AM, tz: TZ, name: null, signupAt: null, classes: [], pattern: null, rows: [], yesterday: null })
+    assert.equal(f.hasSchedule, false)
+    assert.match(fallbackFront(f).headline, /NOTHING DUE TODAY/)
+    assert.equal(introText(f), "Nothing is due today.")
+    assert.deepEqual(tickerLines(f, []), ["YOUR WEDNESDAY: LIGHT"])
+})
+
 test("a Saturday with no school: free-day front page, no invented classes", () => {
     const f = paperFacts({ now: SAT_6AM, tz: TZ, name: null, signupAt: null, classes, pattern: null, rows: [], yesterday: null })
     assert.equal(f.schoolDay, false); assert.deepEqual(f.schedule, [])
@@ -66,7 +74,7 @@ test("the front page check: off-limits words, invented numbers and names are ref
 test("assembled paper has every section, and the ticker ends with their own line", () => {
     const f = facts()
     const p = assemble(f, fallbackFront(f), [{ headline: "Turtles nest in California", ticker: "Turtles nest in California", summary: "x", source: "NOAA", url: "https://www.noaa.gov/x" }])
-    assert.deepEqual(Object.keys(p), ["v", "date", "dateLabel", "issue", "name", "front", "market", "marketRaw", "intro", "schedule", "ticker", "news", "week", "next", "forecast"])
+    assert.deepEqual(Object.keys(p), ["v", "date", "dateLabel", "issue", "name", "front", "market", "marketRaw", "intro", "schedule", "hasSchedule", "ticker", "news", "week", "next", "forecast"])
     assert.deepEqual(p.ticker, ["TURTLES NEST IN CALIFORNIA", "YOUR FRIDAY: HEAVY"])
 })
 
