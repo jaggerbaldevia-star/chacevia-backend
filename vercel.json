@@ -5,6 +5,9 @@
     },
     "api/research-deck.js": {
       "maxDuration": 60
+    },
+    "api/schedule-extract.js": {
+      "maxDuration": 60
     }
   },
   "rewrites": [
@@ -91,6 +94,10 @@
     {
       "source": "/api/reminder-dispatch",
       "destination": "/api/schedule-extract?action=reminder-dispatch"
+    },
+    {
+      "source": "/api/canvas-catchup",
+      "destination": "/api/schedule-extract?action=canvas-catchup"
     }
   ]
 }

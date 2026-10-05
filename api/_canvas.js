@@ -591,7 +591,7 @@ function toLocalISODate(d, timeZone) {
 // registrar does, teacher and section included; a student names it the way they
 // say it out loud. Matching on the raw string means the import files homework
 // under a second copy of a class they already have.
-function classKey(name) {
+export function classKey(name) {
     return String(name || "")
         .split(" - ")[0]
         .replace(/\s+/g, " ")

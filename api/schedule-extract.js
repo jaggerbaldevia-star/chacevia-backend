@@ -27,6 +27,7 @@ import {
 import ICAL from "ical.js"
 import { setCors } from "./_cors.js"
 import { dispatch, makeStore, sendExpo } from "./_reminders.js"
+import { CATCHUP_MAX_IMAGES, CATCHUP_MAX_IMAGE_CHARS, catchupRules, cleanRows, matchRows } from "./_catchup.js"
 import {
     canvasAllowed,
     canvasEnabled,
@@ -836,6 +837,74 @@ async function handleCanvasCron(req, res) {
 }
 
 // ---------------------------------------------------------------------
+// canvas-catchup — "catch up from Canvas" (see api/_catchup.js)
+// ---------------------------------------------------------------------
+// Reads 1-5 of the student's own Canvas screenshots and says which of their
+// Canvas assignments look submitted, graded or missing. Writes NOTHING: the
+// app shows a confirm screen and saves only what the student ticks.
+// Images are sent to the model and dropped; nothing about them is stored or
+// logged. Metered under its own name in _limits.js; no coin price.
+async function handleCanvasCatchup(req, res, body) {
+    if (!canvasEnabled()) return res.status(404).json({ error: "Not found." })
+    const images = Array.isArray(body && body.images) ? body.images : []
+    if (!images.length || images.length > CATCHUP_MAX_IMAGES)
+        return res.status(400).json({ error: "Pick 1 to 5 screenshots." })
+    for (const im of images) {
+        if (typeof im !== "string" || !/^data:image\/(png|jpe?g|webp|heic|heif);base64,/i.test(im) || im.length > CATCHUP_MAX_IMAGE_CHARS)
+            return res.status(400).json({ error: "One of those isn't a screenshot I can read. Try a PNG or JPG." })
+    }
+    if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "Server is missing OPENAI_API_KEY." })
+
+    try {
+        const guard = await requireCoins(req, body, 0, "canvas-catchup")
+        if (!guard.ok) return res.status(guard.status).json(guard.payload)
+        if (!canvasAllowed(guard.userId)) return res.status(404).json({ error: "Not found." })
+
+        let today = new Date().toISOString().slice(0, 10)
+        try {
+            if (body.tz) today = new Intl.DateTimeFormat("en-CA", { timeZone: String(body.tz) }).format(new Date())
+        } catch (e) {}
+
+        const resp = await withRetry(
+            () => ai().responses.create({
+                model: MODELS.smart,
+                input: [{
+                    role: "user",
+                    content: [
+                        ...images.map((u) => ({ type: "input_image", image_url: u })),
+                        { type: "input_text", text: catchupRules(today) },
+                    ],
+                }],
+            }),
+            { label: "canvas-catchup" }
+        )
+        let parsed = {}
+        try {
+            const t = String(resp.output_text || "").trim().replace(/^```json/i, "").replace(/^```/, "").replace(/```$/, "")
+            parsed = JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1))
+        } catch (e) {
+            return res.status(200).json({ matched: [], unmatched: [], message: "I couldn't read a list in those. Try a screenshot of the Grades page or your To Do list." })
+        }
+        const rows = cleanRows(parsed)
+
+        const db = svc()
+        const [a, c] = await Promise.all([
+            db.from("assignments").select("id, title, class_id, due_date, done, canvas_state").eq("user_id", guard.userId).eq("source", "canvas"),
+            db.from("classes").select("id, name").eq("user_id", guard.userId),
+        ])
+        if (a.error || c.error) throw a.error || c.error
+        const classNameById = {}
+        for (const k of c.data || []) classNameById[k.id] = k.name
+        const { matched, unmatched } = matchRows(rows, a.data || [], classNameById)
+        return res.status(200).json({ matched, unmatched, rowsRead: rows.length })
+    } catch (err) {
+        // The message only: never the request, the images or what was read.
+        console.error("canvas-catchup error:", (err && (err.status || err.message)) || "unknown")
+        return res.status(500).json({ error: "Couldn't read those right now. Try again in a minute." })
+    }
+}
+
+// ---------------------------------------------------------------------
 // reminder-dispatch — pg_cron calls this once a minute (see api/_reminders.js)
 // ---------------------------------------------------------------------
 // Merged in here, like canvas-cron, to stay under Vercel's function limit.
@@ -871,6 +940,7 @@ export default async function handler(req, res) {
     if (action === "canvas-disconnect") return handleCanvasDisconnect(req, res, body)
     if (action === "canvas-cron") return handleCanvasCron(req, res)
     if (action === "reminder-dispatch") return handleReminderDispatch(req, res)
+    if (action === "canvas-catchup") return handleCanvasCatchup(req, res, body)
     if (action === "canvas-feed-audit") return handleCanvasFeedAudit(req, res, body)
     if (action === "shorten") return handleShorten(req, res, body)
     if (action === "shorten-backfill") return handleShortenBackfill(req, res, body)

@@ -25,7 +25,7 @@ const PREFIX_RE =
     /^\s*(preparation|prep|reminder|homework|hw|assignment|task|reading|classwork|cw|due|optional|ungraded)\b[\s:#\-–—]*/i
 
 // Trailing noise Canvas adds: " [SPAN 3]", " (Period 2)".
-const TAIL_RE = /\s*[\[(][^\])]*[\])]\s*$/
+export const TAIL_RE = /\s*[\[(][^\])]*[\])]\s*$/
 
 // The kind of thing it is. Longest first so "lab report" beats "lab".
 const TYPES = [
@@ -84,7 +84,7 @@ const STOPWORDS = new Set([
 const PAGES_RE =
     /\b(?:pgs?|pp|pages?|p)\.?\s*(\d+)\s*(?:[-–—]\s*(\d+))?/i
 
-function tidy(raw) {
+export function tidy(raw) {
     return String(raw == null ? "" : raw)
         .replace(/\s+/g, " ")
         .trim()
