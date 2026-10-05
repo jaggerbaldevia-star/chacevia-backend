@@ -27,6 +27,9 @@ import {
 import ICAL from "ical.js"
 import { setCors } from "./_cors.js"
 import { dispatch, makeStore, sendExpo } from "./_reminders.js"
+import { buildEdition } from "./_news.js"
+import { buildPaper, userTz } from "./_paper.js"
+import { localParts } from "./_schedule.js"
 import { CATCHUP_MAX_IMAGES, CATCHUP_MAX_IMAGE_CHARS, catchupRules, cleanRows, matchRows } from "./_catchup.js"
 import {
     canvasAllowed,
@@ -922,6 +925,89 @@ async function handleReminderDispatch(req, res) {
     }
 }
 
+// ---------------------------------------------------------------------
+// Morning Paper
+// ---------------------------------------------------------------------
+// paper-dispatch: pg_cron calls this every 15 minutes. It fetches the day's
+// world news once (first run after 07:00 UTC, i.e. midnight in California),
+// then builds each student's paper once their local clock passes 4:30, so it
+// opens instantly. A few per run, so one slow model call can't time the whole
+// thing out; the next run picks up where this one stopped.
+const PAPER_AT_MIN = 4 * 60 + 30
+const PAPERS_PER_RUN = 8
+
+async function handlePaperDispatch(req, res) {
+    const secret = process.env.CRON_SECRET || ""
+    const given = (req.headers && (req.headers["x-cron-secret"] || req.headers["X-Cron-Secret"])) || ""
+    if (!secret || given !== secret) return res.status(401).json({ error: "Unauthorized." })
+    const db = svc()
+    const now = new Date()
+    const summary = { news: "kept", built: 0, failed: 0, waiting: 0 }
+    try {
+        const edition = now.toISOString().slice(0, 10)
+        const { data: have } = await db.from("daily_news").select("edition").eq("edition", edition).maybeSingle()
+        if (!have && now.getUTCHours() >= 7) {
+            const stories = await buildEdition(now)
+            // An empty edition is only kept late in the day: earlier, an empty
+            // result is more likely a hiccup worth one more try.
+            if (stories.length || now.getUTCHours() >= 12) {
+                await db.from("daily_news").upsert({ edition, stories })
+                summary.news = stories.length + " stories"
+            } else summary.news = "empty, retrying"
+            // Fetching, picking and drawing the news is most of a run's time
+            // budget; papers wait for the next run, 15 minutes on.
+            console.log("paper-dispatch", JSON.stringify(summary))
+            return res.status(200).json({ ok: true, ...summary })
+        }
+
+        const { data: people } = await db.from("rocco_profile").select("user_id")
+        const due = []
+        for (const p of people || []) {
+            const tz = await userTz(db, p.user_id)
+            const local = localParts(now, tz)
+            if (local.minutes < PAPER_AT_MIN) { summary.waiting++; continue }
+            due.push({ id: p.user_id, date: local.iso, tz })
+        }
+        if (due.length) {
+            const { data: done } = await db.from("daily_papers").select("user_id, local_date")
+                .in("user_id", due.map((d) => d.id)).in("local_date", [...new Set(due.map((d) => d.date))])
+            const made = new Set((done || []).map((r) => r.user_id + "|" + r.local_date))
+            const todo = due.filter((d) => !made.has(d.id + "|" + d.date)).slice(0, PAPERS_PER_RUN)
+            for (const d of todo) {
+                try { await buildPaper(d.id, { now, tzOverride: d.tz }); summary.built++ } catch (e) { summary.failed++; console.error("paper build", e && e.message) }
+            }
+        }
+        if (summary.built || summary.failed || summary.news !== "kept") console.log("paper-dispatch", JSON.stringify(summary))
+        return res.status(200).json({ ok: true, ...summary })
+    } catch (err) {
+        console.error("paper-dispatch error:", err)
+        return res.status(500).json({ error: "Paper dispatch failed." })
+    }
+}
+
+// paper-today: the app asks for today's paper. Normally it's already built and
+// the app reads it straight from daily_papers; this is for the first morning, a
+// new account, or a run that hasn't reached them yet. Builds it now if needed.
+async function handlePaperToday(req, res, body) {
+    try {
+        const guard = await requireCoins(req, body, 0, "paper-today")
+        if (!guard.ok) return res.status(guard.status).json(guard.payload)
+        const db = svc()
+        let tz = body && typeof body.tz === "string" ? body.tz.slice(0, 64) : null
+        try { if (tz) new Intl.DateTimeFormat("en-US", { timeZone: tz }) } catch (e) { tz = null }
+        tz = tz || await userTz(db, guard.userId)
+        const date = localParts(new Date(), tz).iso
+        const { data: have } = await db.from("daily_papers").select("content").eq("user_id", guard.userId).eq("local_date", date).maybeSingle()
+        if (have && have.content) return res.status(200).json({ paper: have.content })
+        const paper = await buildPaper(guard.userId, { tzOverride: tz })
+        return res.status(200).json({ paper })
+    } catch (err) {
+        console.error("paper-today error:", err)
+        // The app shows its own personal sections when this fails.
+        return res.status(500).json({ error: "The paper didn't print. Try again in a moment." })
+    }
+}
+
 export default async function handler(req, res) {
     setCorsHeaders(req, res)
     if (req.method === "OPTIONS") return res.status(204).end()
@@ -940,6 +1026,8 @@ export default async function handler(req, res) {
     if (action === "canvas-disconnect") return handleCanvasDisconnect(req, res, body)
     if (action === "canvas-cron") return handleCanvasCron(req, res)
     if (action === "reminder-dispatch") return handleReminderDispatch(req, res)
+    if (action === "paper-dispatch") return handlePaperDispatch(req, res)
+    if (action === "paper-today") return handlePaperToday(req, res, body)
     if (action === "canvas-catchup") return handleCanvasCatchup(req, res, body)
     if (action === "canvas-feed-audit") return handleCanvasFeedAudit(req, res, body)
     if (action === "shorten") return handleShorten(req, res, body)

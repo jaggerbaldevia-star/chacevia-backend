@@ -40,6 +40,8 @@ const LIMITS = {
     "canvas-sync": 20,
     // "Catch up from Canvas": up to 5 screenshots per call, one model call.
     "canvas-catchup": 10,
+    // The app asking for today's Morning Paper; builds it only if missing.
+    "paper-today": 20,
     // The second model call every Rocco message makes — memory extraction.
     // Metered under its own name so the real call volume is visible in
     // usage_counters instead of hiding behind the chat count.
