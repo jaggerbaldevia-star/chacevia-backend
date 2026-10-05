@@ -24,6 +24,7 @@ import {
     shortenClassBatch,
     ruleShortClass,
 } from "./_shorten.js"
+import ICAL from "ical.js"
 import { setCors } from "./_cors.js"
 import { dispatch, makeStore, sendExpo } from "./_reminders.js"
 import {
@@ -742,7 +743,43 @@ async function handleCanvasFeedAudit(req, res, body) {
     }
     const allDay = dtstart.filter((d) => /VALUE=DATE\b/i.test(d)).length
 
+    // v1.2: the events parseAssignments skips. Shapes only (digits masked),
+    // so it's clear which are course events and which are personal ones; a
+    // few titles of the ones that look like course events, because the owner
+    // asked to see examples from his own feed. Descriptions never leave here.
+    const skipped = { total: 0, uidShapes: {}, urlShapes: {}, byContext: {}, courseExamples: [] }
+    try {
+        const comp = new ICAL.Component(ICAL.parse(text))
+        for (const ve of comp.getAllSubcomponents("vevent")) {
+            const uid = String(ve.getFirstPropertyValue("uid") || "")
+            const url = String(ve.getFirstPropertyValue("url") || "")
+            if (/^event-assignment-/.test(uid) && /assignment/.test(url)) continue
+            skipped.total++
+            const us = uid.replace(/\d+/g, "#")
+            skipped.uidShapes[us] = (skipped.uidShapes[us] || 0) + 1
+            let ctx = "none"
+            try {
+                const u = new URL(url)
+                const shape = u.pathname.replace(/\d+/g, "#") +
+                    (u.search ? "?" + [...u.searchParams.keys()].join("&") : "") +
+                    (u.hash ? u.hash.replace(/\d+/g, "#") : "")
+                skipped.urlShapes[shape] = (skipped.urlShapes[shape] || 0) + 1
+                const inc = u.searchParams.get("include_contexts") || ""
+                const m = inc.match(/^(course|user|group|account)_/) || u.pathname.match(/\/(courses|users|groups)\//)
+                ctx = m ? m[1].replace(/s$/, "") : "unknown"
+            } catch (e) {
+                ctx = url ? "bad-url" : "no-url"
+            }
+            skipped.byContext[ctx] = (skipped.byContext[ctx] || 0) + 1
+            if (ctx === "course" && skipped.courseExamples.length < 6)
+                skipped.courseExamples.push(String(ve.getFirstPropertyValue("summary") || "").slice(0, 80))
+        }
+    } catch (e) {
+        skipped.error = "parse"
+    }
+
     return res.status(200).json({
+        skipped,
         bytes: String(text).length,
         events: perEvent.length,
         propertyNames: Object.keys(props).sort(),
