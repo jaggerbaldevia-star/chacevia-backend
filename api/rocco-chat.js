@@ -262,7 +262,11 @@ export default async function handler(req, res) {
         const loadAll = (uid) => Promise.all([
             loadMemory(uid),
             loadProfile(uid),
-            uid && process.env.SUPABASE_URL
+            // Only the app version that sends its zone gets the day context: it
+            // ships alongside the AI notice and privacy line that say Rocco
+            // reads classes and due work, so the live site doesn't start
+            // sending them to OpenAI before the policy says so.
+            uid && sentTz && process.env.SUPABASE_URL
                 ? userTz(uid, sentTz)
                     .then((tz) => loadWorld(uid, now, tz, message).then((w) => ({ w, tz })))
                     .catch(() => null)
