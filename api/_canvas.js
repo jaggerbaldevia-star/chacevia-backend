@@ -421,6 +421,54 @@ function stripCourseTail(title, course) {
     return title
 }
 
+// ---------------------------------------------------------------------
+// The teacher's instructions (v1.2)
+// ---------------------------------------------------------------------
+// Text written by someone else, so it is only ever plain text: tags gone,
+// entities decoded, whitespace collapsed, capped. It is rendered as text in
+// the app (never HTML) and is never logged here or anywhere else.
+export const DETAILS_MAX = 4000
+const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", ndash: "-", mdash: "-", hellip: "...", rsquo: "'", lsquo: "'", rdquo: '"', ldquo: '"' }
+export function plainText(raw, isHtml) {
+    let t = String(raw == null ? "" : raw)
+    if (isHtml) {
+        t = t
+            .replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
+            .replace(/<br\s*\/?>/gi, "\n")
+            .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, "\n")
+            .replace(/<li[^>]*>/gi, "- ")
+            .replace(/<[^>]+>/g, " ")
+    }
+    t = t
+        .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => {
+            if (e[0] === "#") {
+                const n = e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10)
+                return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : " "
+            }
+            return ENTITIES[e.toLowerCase()] != null ? ENTITIES[e.toLowerCase()] : m
+        })
+        // Control characters (keep newlines) and zero-width junk.
+        .replace(/[\u0000-\u0009\u000B-\u001F\u007F\u200B-\u200D\uFEFF]/g, " ")
+        .replace(/[ \t\u00A0]+/g, " ")
+        .replace(/ *\n */g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim()
+    if (t.length > DETAILS_MAX) {
+        const cut = t.slice(0, DETAILS_MAX)
+        const sp = cut.lastIndexOf(" ")
+        t = (sp > DETAILS_MAX - 200 ? cut.slice(0, sp) : cut).trimEnd() + "..."
+    }
+    return t
+}
+
+/** DESCRIPTION if there is one, else X-ALT-DESC (HTML) as plain text. */
+function detailsOf(ve) {
+    const d = plainText(ve.getFirstPropertyValue("description"), false)
+    if (d) return d
+    const alt = plainText(ve.getFirstPropertyValue("x-alt-desc"), true)
+    return alt || null
+}
+
 /**
  * Turns an .ics body into importable rows.
  * Returns { items, stats } — stats is for diagnosing a feed that imports
@@ -461,10 +509,27 @@ export function parseAssignments(icsText, timeZone) {
             continue
         }
 
+        // All-day events (DTSTART;VALUE=DATE) have no real time of day, so
+        // they keep due_at null rather than inventing midnight.
+        const allDay = !!(ev.startDate && ev.startDate.isDate)
+
         const summary = String(ev.summary || "").trim()
         const m = summary.match(TITLE_COURSE)
         const course = (m ? m[2] : "").trim()
         const title = stripCourseTail((m ? m[1] : summary).trim(), course) || "Untitled assignment"
+
+        // A section with its own due date gets an override event for the same
+        // assignment. If a feed ever carries both, keep ONE row (the override:
+        // it's the date for this student's section). Two rows with one key in
+        // a single upsert would make Postgres reject the whole sync.
+        const key = "canvas:assignment:" + (assignmentId || uid)
+        const isOverride = /override/i.test(uid)
+        const prev = items.findIndex((x) => x.external_id === key)
+        if (prev !== -1) {
+            if (!isOverride) continue
+            items.splice(prev, 1)
+            stats.assignments--
+        }
 
         stats.assignments++
         items.push({
@@ -475,6 +540,8 @@ export function parseAssignments(icsText, timeZone) {
             title: title.slice(0, 200),
             course: course.slice(0, 120),
             due_date: toLocalISODate(start, timeZone),
+            due_at: allDay ? null : start.toISOString(),
+            details: detailsOf(ve),
             url: url.slice(0, 500),
         })
     }
@@ -674,6 +741,10 @@ export async function importItems(db, userId, items, feedHost) {
         class_id: i.course ? classIdByName[i.course] || null : null,
         title: i.title,
         due_date: i.due_date,
+        // Every row carries both keys (null when absent): PostgREST needs one
+        // shape per upsert chunk, and a missing key would leave a stale value.
+        due_at: i.due_at || null,
+        details: i.details || null,
         external_id: i.external_id,
         source: "canvas",
         // Canvas puts the assignment's own page in the event's URL property, so
