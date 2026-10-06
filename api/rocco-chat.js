@@ -5,8 +5,8 @@
 // Still login-gated and rate-limited via requireCoins (cost 0).
 
 import OpenAI from "openai"
-import { requireCoins, svc, tokenFrom } from "./_coins.js"
-import { noteUsage } from "./_limits.js"
+import { requireCoins, svc, tokenFrom, getUserId, getBalance } from "./_coins.js"
+import { noteUsage, bumpLifetime, tutorialIsFree } from "./_limits.js"
 import { MODELS, withRetry, ai } from "./_ai.js"
 import { setCors } from "./_cors.js"
 import { replyStream } from "./_rocco_stream.js"
@@ -93,6 +93,22 @@ function parseRocco(text) {
     // the flag has to be a decision the model made, and unparseable output means
     // it did not make one.
     return { reply: t, doodle: null, crisis: false }
+}
+
+// First-run tutorial answers: short enough to read on one card.
+export const TUTORIAL_MAX_WORDS = 60
+const TUTORIAL_NOTE = `\n\nTUTORIAL MODE: this is the user's first-run walkthrough of Chacevia. Answer in ${TUTORIAL_MAX_WORDS} words or fewer — one or two sentences. The SAFETY rules still win over this.`
+
+// Hard ceiling behind the prompt: the model is asked for <=60 words, and this
+// makes sure of it. Cuts at a sentence end inside the limit when there is one.
+export function clipWords(text, max = TUTORIAL_MAX_WORDS) {
+    const words = String(text || "").trim().split(/\s+/).filter(Boolean)
+    if (words.length <= max) return words.join(" ")
+    const cut = words.slice(0, max).join(" ")
+    const end = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "))
+    if (end > cut.length / 2) return cut.slice(0, end + 1)
+    if (/[.!?]$/.test(cut)) return cut
+    return cut.replace(/[,;:\-–—]+$/, "") + "…"
 }
 
 const MAX_FACTS = 40
@@ -249,6 +265,9 @@ export default async function handler(req, res) {
     // Streaming is opt-in, so the live site (which never asks for it) keeps
     // getting exactly the one JSON object it always has.
     const wantStream = !!(body && body.stream === true)
+    // First-run tutorial question. The first TUTORIAL_FREE_MESSAGES of these
+    // per user, ever, skip the daily cap; after that it's a normal message.
+    const tutorial = !!(body && body.tutorial === true)
     if (typeof message !== "string" || !message.trim()) return res.status(400).json({ error: "Say something to Rocco!" })
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "Server is missing OPENAI_API_KEY." })
 
@@ -273,7 +292,21 @@ export default async function handler(req, res) {
                 : null,
         ])
         const early = guess ? loadAll(guess) : null
-        const guard = await requireCoins(req, body, COIN_COST, "rocco-chat")
+        let guard = null
+        let tutorialFree = false
+        if (tutorial && process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+            const uid = await getUserId(tokenFrom(req, body))
+            if (!uid) return res.status(401).json({ error: "Please log in to use Chacevia." })
+            let count = null
+            try { count = await bumpLifetime(uid, "rocco-tutorial") } catch (e) {
+                console.warn("[rocco] tutorial counter failed:", e && e.message)
+            }
+            if (tutorialIsFree(count)) {
+                tutorialFree = true
+                guard = { ok: true, userId: uid, balance: await getBalance(uid), limit: null }
+            }
+        }
+        if (!guard) guard = await requireCoins(req, body, COIN_COST, "rocco-chat")
         if (!guard.ok) return res.status(guard.status).json(guard.payload)
 
         const model = process.env.ROCCO_MODEL || DEFAULT_MODEL
@@ -286,7 +319,7 @@ export default async function handler(req, res) {
 
         const request = {
             model,
-            instructions: INSTRUCTIONS,
+            instructions: tutorialFree ? INSTRUCTIONS + TUTORIAL_NOTE : INSTRUCTIONS,
             input: context + "\nUser says: " + userMsg,
             ...(EFFORT !== "default" ? { reasoning: { effort: EFFORT } } : {}),
         }
@@ -311,10 +344,18 @@ export default async function handler(req, res) {
             res.setHeader("Cache-Control", "no-cache, no-transform")
             streaming = true
             const parse = replyStream()
+            let streamed = ""
             for await (const ev of stream) {
                 if (ev.type !== "response.output_text.delta") continue
                 const { text, crisis } = parse.push(ev.delta)
-                if (text && crisis !== true) res.write(JSON.stringify({ t: "delta", text }) + "\n")
+                if (!text || crisis === true) continue
+                // Tutorial: stop streaming at the word limit; "done" carries
+                // the clipped reply.
+                if (tutorialFree) {
+                    streamed += text
+                    if (streamed.trim().split(/\s+/).length > TUTORIAL_MAX_WORDS) continue
+                }
+                res.write(JSON.stringify({ t: "delta", text }) + "\n")
             }
             output = parse.raw
         } else {
@@ -322,16 +363,23 @@ export default async function handler(req, res) {
             output = resp.output_text
         }
 
-        const { reply, doodle, crisis } = parseRocco(output)
+        const parsed = parseRocco(output)
+        const { doodle, crisis } = parsed
+        // A crisis reply is never cut short — the 988 details matter more than
+        // the word count.
+        const reply = tutorialFree && !crisis ? clipWords(parsed.reply) : parsed.reply
         if (!reply) {
             const error = "Rocco got tongue-tied. Try again!"
             if (streaming) return res.end(JSON.stringify({ t: "error", error }) + "\n")
             return res.status(502).json({ error })
         }
 
-        if (guard.userId) waitUntil(remember(guard.userId, model, userMsg, reply))
+        // Tutorial answers aren't remembered: they're scripted first-run
+        // questions, not something the user told Rocco about themselves.
+        if (guard.userId && !tutorialFree) waitUntil(remember(guard.userId, model, userMsg, reply))
 
         const payload = { reply, doodle, coins, messagesLeftToday, crisis }
+        if (tutorialFree) payload.tutorialFree = true
         if (streaming) return res.end(JSON.stringify({ t: "done", ...payload }) + "\n")
         return res.status(200).json(payload)
     } catch (err) {

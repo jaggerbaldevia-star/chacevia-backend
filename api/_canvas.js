@@ -83,6 +83,20 @@ export function decryptFeed(row) {
     ]).toString("utf8")
 }
 
+// Same AES-256-GCM and the same key, packed into one text column for secrets
+// stored outside canvas_links (Apple refresh tokens). Format: v1.iv.tag.ct,
+// each part base64. Never log either side of this.
+export function sealSecret(text) {
+    const e = encryptFeed(text)
+    return ["v1", e.feed_iv, e.feed_tag, e.feed_ciphertext].join(".")
+}
+
+export function openSecret(sealed) {
+    const [v, feed_iv, feed_tag, feed_ciphertext] = String(sealed || "").split(".")
+    if (v !== "v1" || !feed_iv || !feed_tag || !feed_ciphertext) throw new Error("Unreadable sealed secret")
+    return decryptFeed({ feed_iv, feed_tag, feed_ciphertext })
+}
+
 // ---------------------------------------------------------------------
 // SSRF defence
 // ---------------------------------------------------------------------

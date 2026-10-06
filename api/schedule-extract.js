@@ -43,6 +43,7 @@ import {
     parseFeedUrl,
     removeCanvasData,
 } from "./_canvas.js"
+import { rememberSchoolHost, searchSchools } from "./_schools.js"
 
 export const config = { maxDuration: 60 }
 const COIN_COST = 0 // free; requireCoins still enforces login + rate limit
@@ -378,6 +379,17 @@ async function handleCanvasConnect(req, res, body) {
         return canvasFailure(res, err, "store")
     }
 
+    // Optional: which school this is, so the next student there gets the host
+    // suggested. Host only — never the feed URL. Best-effort; a failure here
+    // never fails the connect.
+    if (body && body.school) {
+        try {
+            await rememberSchoolHost(db, body.school, feedUrl.hostname)
+        } catch (err) {
+            console.warn("[canvas] remember school failed:", err && err.message)
+        }
+    }
+
     return res.status(200).json({
         connected: true,
         host: feedUrl.hostname,
@@ -495,6 +507,21 @@ async function handleCanvasDisconnect(req, res, body) {
         return canvasFailure(res, err, "disconnect")
     }
     return res.status(200).json({ connected: false, removed: true })
+}
+
+// action=school-search — "which school?" typeahead on the Canvas step.
+// Login required (no school list for the open internet). Returns at most 8
+// schools with their Canvas host, nothing about who is at them.
+async function handleSchoolSearch(req, res, body) {
+    const guard = await requireCoins(req, body, 0, "school-search")
+    if (!guard.ok) return res.status(guard.status).json(guard.payload)
+    try {
+        const schools = await searchSchools(svc(), body && body.q)
+        return res.status(200).json({ schools })
+    } catch (err) {
+        console.error("school-search error:", err && err.message)
+        return res.status(500).json({ error: "Couldn't search schools right now.", schools: [] })
+    }
 }
 
 // Daily sweep, called by pg_cron via pg_net. Authenticated by a shared secret
@@ -1021,6 +1048,7 @@ export default async function handler(req, res) {
     const action = (req.query && req.query.action) || (body && body.action)
     if (action === "reminder-text") return handleReminderText(req, res, body)
     if (action === "canvas-connect") return handleCanvasConnect(req, res, body)
+    if (action === "school-search") return handleSchoolSearch(req, res, body)
     if (action === "canvas-sync") return handleCanvasSync(req, res, body)
     if (action === "canvas-status") return handleCanvasStatus(req, res, body)
     if (action === "canvas-disconnect") return handleCanvasDisconnect(req, res, body)

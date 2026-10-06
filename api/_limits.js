@@ -46,6 +46,11 @@ const LIMITS = {
     // Metered under its own name so the real call volume is visible in
     // usage_counters instead of hiding behind the chat count.
     "rocco-memory": 60,
+    // "Which school?" typeahead — one call per pause in typing, so it needs
+    // far more headroom than an AI endpoint. No model call behind it.
+    "school-search": 300,
+    // One per Sign in with Apple; a handful covers re-installs.
+    "apple-token": 10,
     default: 30,
 }
 
@@ -195,6 +200,22 @@ export async function checkLimit(userId, endpoint) {
     }
 
     return { ok: true, hourUsed, hourCap, dayUsed, dayCap, messagesLeftToday, premium }
+}
+
+// Lifetime counter — one row per user per endpoint that never resets (bucket
+// "lifetime" can't collide with the hour/day formats). Used for the first-run
+// tutorial's free Rocco messages. Throws on failure, like bump.
+export async function bumpLifetime(userId, endpoint) {
+    return bump(userId, "lifetime", endpoint)
+}
+
+// The first-run tutorial's free Rocco messages: the user's first N tutorial
+// messages ever skip the daily cap. `count` is the lifetime counter AFTER this
+// message was added; null means the counter couldn't be read, which is never
+// free (fail closed, like every other meter here).
+export const TUTORIAL_FREE_MESSAGES = 2
+export function tutorialIsFree(count) {
+    return Number.isInteger(count) && count >= 1 && count <= TUTORIAL_FREE_MESSAGES
 }
 
 /**

@@ -3,7 +3,9 @@
 // Account lifecycle. Behaviors split by ?action=, same pattern as stripe.js
 // and schedule-extract.js, to stay under Vercel's serverless function cap:
 //
-//   ?action=delete  (POST) — permanently deletes the caller's account
+//   ?action=delete       (POST) — permanently deletes the caller's account
+//   ?action=apple-token  (POST) — stores the caller's Sign in with Apple
+//                                 refresh token (sealed) so delete can revoke it
 //
 // THIS FILE IS THE 12TH AND LAST FUNCTION. Vercel Hobby caps serverless
 // functions at 12, counting every api/*.js that does not start with "_".
@@ -15,8 +17,10 @@
 // the body is never read — the client could send anyone's, and this is a
 // destructive operation.
 
-import { svc, getUserId } from "./_coins.js"
+import { svc, getUserId, requireCoins } from "./_coins.js"
 import { setCors } from "./_cors.js"
+import { appleConfig, exchangeCode, revokeToken } from "./_apple.js"
+import { openSecret, sealSecret } from "./_canvas.js"
 
 // Every table holding rows owned by a user, children before parents so the
 // explicit deletes don't depend on cascade ordering.
@@ -53,6 +57,9 @@ const USER_TABLES = [
     // revokes our copy of the credential; the Canvas assignments and classes
     // it created are ordinary rows in the two tables above and go with them.
     "canvas_links",
+    // The sealed Sign in with Apple refresh token. Revoked with Apple first
+    // (revokeApple below), then deleted here.
+    "apple_tokens",
     "wallets",
 ]
 
@@ -97,6 +104,86 @@ async function clearPushSends(db, userId) {
     return null
 }
 
+// Apple requires apps with Sign in with Apple to revoke the user's tokens when
+// the account is deleted. Best-effort by design: a failure here is logged and
+// deletion carries on — keeping someone's account because Apple's endpoint was
+// down would be the worse outcome. Never logs the token.
+async function revokeApple(db, userId) {
+    const { data, error } = await db
+        .from("apple_tokens")
+        .select("refresh_token_enc")
+        .eq("user_id", userId)
+        .maybeSingle()
+    if (error) {
+        if (!isMissingTable(error)) console.warn("[account] apple revoke: lookup failed:", error.message)
+        return "lookup-failed"
+    }
+    if (!data || !data.refresh_token_enc) return "no-token"
+    const cfg = appleConfig()
+    if (!cfg) {
+        console.warn("[account] apple revoke skipped: APPLE_SIWA_* env not set")
+        return "skipped-no-env"
+    }
+    try {
+        const r = await revokeToken(cfg, openSecret(data.refresh_token_enc))
+        if (!r.ok) {
+            console.warn(`[account] apple revoke failed: http ${r.status}`)
+            return "failed"
+        }
+        return "revoked"
+    } catch (err) {
+        console.warn("[account] apple revoke error:", err && err.message)
+        return "failed"
+    }
+}
+
+// ---------------------------------------------------------------------
+// apple-token — keep the refresh token Apple hands back for this sign-in
+// ---------------------------------------------------------------------
+// The app posts the one-time authorizationCode right after Sign in with Apple,
+// fire and forget. Until the SIWA key is in Vercel this answers
+// {stored:false} and nothing else happens.
+async function handleAppleToken(req, res) {
+    if (req.method !== "POST") {
+        return res.status(405).json({ error: "Method not allowed. Use POST." })
+    }
+    let body = req.body
+    if (typeof body === "string") {
+        try { body = JSON.parse(body) } catch { return res.status(400).json({ error: "Body must be valid JSON." }) }
+    }
+    const guard = await requireCoins(req, body, 0, "apple-token")
+    if (!guard.ok) return res.status(guard.status).json(guard.payload)
+    if (!guard.userId) return res.status(200).json({ stored: false, reason: "unconfigured" })
+
+    const code = body && body.authorizationCode
+    if (typeof code !== "string" || !code.trim() || code.length > 1024) {
+        return res.status(400).json({ error: "authorizationCode is required." })
+    }
+    const cfg = appleConfig()
+    if (!cfg || !process.env.CANVAS_FEED_KEY) {
+        console.warn("[account] apple-token: not stored, SIWA env not set")
+        return res.status(200).json({ stored: false, reason: "not-configured" })
+    }
+    try {
+        const { refreshToken, reason } = await exchangeCode(cfg, code.trim())
+        if (!refreshToken) {
+            console.warn(`[account] apple-token: exchange failed: ${reason}`)
+            return res.status(200).json({ stored: false, reason: "apple-rejected" })
+        }
+        const { error } = await svc()
+            .from("apple_tokens")
+            .upsert(
+                { user_id: guard.userId, refresh_token_enc: sealSecret(refreshToken), created_at: new Date().toISOString() },
+                { onConflict: "user_id" }
+            )
+        if (error) throw error
+        return res.status(200).json({ stored: true })
+    } catch (err) {
+        console.error("[account] apple-token error:", err && err.message)
+        return res.status(500).json({ stored: false, error: "Couldn't save the Apple sign-in." })
+    }
+}
+
 // ---------------------------------------------------------------------
 // delete — wipe the caller's account and data
 // ---------------------------------------------------------------------
@@ -118,6 +205,9 @@ async function handleDelete(req, res) {
 
     const db = svc()
     const done = []
+
+    // First, while the sealed token still exists. Never blocks the delete.
+    done.push(`apple-revoke:${await revokeApple(db, userId)}`)
 
     // Purchases come first, and on purpose. The foreign key to auth.users was
     // created `on delete cascade` (pro-setup.sql), so deleting the auth user
@@ -197,6 +287,7 @@ export default async function handler(req, res) {
 
     const action = (req.query && req.query.action) || ""
     if (action === "delete") return handleDelete(req, res)
+    if (action === "apple-token") return handleAppleToken(req, res)
 
-    return res.status(400).json({ error: "Unknown action. Use ?action=delete." })
+    return res.status(400).json({ error: "Unknown action." })
 }
