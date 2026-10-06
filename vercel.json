@@ -100,10 +100,6 @@
       "destination": "/api/schedule-extract?action=canvas-catchup"
     },
     {
-      "source": "/api/school-search",
-      "destination": "/api/schedule-extract?action=school-search"
-    },
-    {
       "source": "/api/apple-token",
       "destination": "/api/account?action=apple-token"
     }

@@ -46,9 +46,6 @@ const LIMITS = {
     // Metered under its own name so the real call volume is visible in
     // usage_counters instead of hiding behind the chat count.
     "rocco-memory": 60,
-    // "Which school?" typeahead — one call per pause in typing, so it needs
-    // far more headroom than an AI endpoint. No model call behind it.
-    "school-search": 300,
     // One per Sign in with Apple; a handful covers re-installs.
     "apple-token": 10,
     default: 30,

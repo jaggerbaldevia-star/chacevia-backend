@@ -1,61 +1,58 @@
-// node --test test/first-run.test.mjs — school keys, Apple client secret,
+// node --test test/first-run.test.mjs — Canvas host memory, Apple client secret,
 // tutorial allowance. No network, no real keys: the Apple key is generated here.
 import test from "node:test"
 import assert from "node:assert/strict"
 import crypto from "node:crypto"
-import { schoolMatchKey, searchTerms, cleanSchool, rememberSchoolHost } from "../api/_schools.js"
+import { cleanCanvasHost, rememberCanvasHost } from "../api/_schools.js"
 import { appleConfig, appleClientSecret, exchangeCode, revokeToken } from "../api/_apple.js"
 import { tutorialIsFree, TUTORIAL_FREE_MESSAGES } from "../api/_limits.js"
 import { clipWords, TUTORIAL_MAX_WORDS } from "../api/rocco-chat.js"
 import { sealSecret, openSecret } from "../api/_canvas.js"
 
-// ---- schools ----------------------------------------------------------------
+// ---- Canvas host (from the feed link) --------------------------------------
 
-test("match key equals the SQL generated column (values checked against Postgres)", () => {
-    assert.equal(schoolMatchKey("St. Mary's High School", "Omaha, NE"), "stmaryshighschool|omahane")
-    assert.equal(schoolMatchKey("Colegio Señora 12", null), "colegioseora12|")
-    assert.equal(schoolMatchKey("St Marys  High-School", "omaha ne"), schoolMatchKey("St. Mary's High School", "Omaha, NE"))
-    assert.notEqual(schoolMatchKey("ab", "c"), schoolMatchKey("a", "bc"), "name and region stay apart")
+test("cleanCanvasHost keeps real hosts only", () => {
+    assert.equal(cleanCanvasHost("Lincoln.Instructure.com"), "lincoln.instructure.com")
+    assert.equal(cleanCanvasHost("canvas.myschool.k12.ca.us"), "canvas.myschool.k12.ca.us")
+    for (const bad of ["", "localhost", "a b.com", "x.instructure.com/feeds", "-x.com", "x..com", null]) assert.equal(cleanCanvasHost(bad), "")
 })
 
-test("search terms are alphanumeric only, max 4, 2+ chars", () => {
-    assert.deepEqual(searchTerms("  Lincoln  High% "), ["lincoln", "high"])
-    assert.deepEqual(searchTerms("a,b.c*() name.eq.x"), ["abc", "nameeqx"])
-    assert.deepEqual(searchTerms("x"), [])
-    assert.equal(searchTerms("one two three four five").length, 4)
-})
-
-test("cleanSchool accepts an id or a name/region, drops junk", () => {
-    const id = "3f2b6c1e-9a4d-4e2f-8b7a-1c2d3e4f5a6b"
-    assert.deepEqual(cleanSchool({ id }), { id })
-    assert.deepEqual(cleanSchool({ name: "  Lincoln   High ", region: " Omaha, NE " }), { name: "Lincoln High", region: "Omaha, NE" })
-    assert.deepEqual(cleanSchool({ name: "Lincoln High" }), { name: "Lincoln High", region: null })
-    assert.equal(cleanSchool({ id: "nope" }), null)
-    assert.equal(cleanSchool({ name: "!!" }), null)
-    assert.equal(cleanSchool({ name: "x".repeat(121) }), null)
-    assert.equal(cleanSchool("Lincoln"), null)
-})
-
-test("rememberSchoolHost only fills an empty host", async () => {
-    const calls = []
+function fakeDb({ schoolRows = [], appMeta = {} } = {}) {
+    const log = []
     const chain = (table) => {
         const q = { table, ops: [] }
         const self = new Proxy(q, {
             get(t, k) {
-                if (k === "then") return (ok) => ok({ error: null })
+                if (k === "then") return (ok) => ok({ data: t.ops[0][0] === "select" ? schoolRows : null, error: null })
                 return (...args) => { t.ops.push([k, ...args]); return self }
             },
         })
-        calls.push(q)
+        log.push(q)
         return self
     }
-    await rememberSchoolHost({ from: chain }, { name: "Lincoln High", region: "Omaha, NE" }, "lincoln.instructure.com")
-    const [ins, upd] = calls
-    assert.equal(ins.ops[0][0], "upsert")
-    assert.deepEqual(ins.ops[0][2], { onConflict: "match_key", ignoreDuplicates: true })
-    assert.ok(upd.ops.some((o) => o[0] === "is" && o[1] === "canvas_host" && o[2] === null))
-    assert.ok(upd.ops.some((o) => o[0] === "eq" && o[1] === "match_key" && o[2] === "lincolnhigh|omahane"))
-    assert.equal(await rememberSchoolHost({ from: chain }, { name: "!!" }, "x.instructure.com"), false)
+    const admin = {
+        getUserById: async () => ({ data: { user: { app_metadata: appMeta } }, error: null }),
+        updateUserById: async (id, attrs) => { log.push({ update: [id, attrs] }); return { error: null } },
+    }
+    return { db: { from: chain, auth: { admin } }, log }
+}
+
+test("rememberCanvasHost: new host → school row + account, merging app_metadata", async () => {
+    const { db, log } = fakeDb({ appMeta: { provider: "apple" } })
+    assert.equal(await rememberCanvasHost(db, "u1", "Lincoln.instructure.com"), true)
+    const ups = log.find((q) => q.ops && q.ops[0][0] === "upsert")
+    assert.deepEqual(ups.ops[0][1], { name: "lincoln.instructure.com", canvas_host: "lincoln.instructure.com" })
+    assert.deepEqual(ups.ops[0][2], { onConflict: "match_key", ignoreDuplicates: true })
+    const upd = log.find((x) => x.update)
+    assert.deepEqual(upd.update, ["u1", { app_metadata: { provider: "apple", canvas_host: "lincoln.instructure.com" } }])
+})
+
+test("rememberCanvasHost: known host, same account host → no writes", async () => {
+    const { db, log } = fakeDb({ schoolRows: [{ id: "s1" }], appMeta: { canvas_host: "lincoln.instructure.com" } })
+    assert.equal(await rememberCanvasHost(db, "u1", "lincoln.instructure.com"), true)
+    assert.equal(log.some((q) => q.ops && q.ops[0][0] === "upsert"), false)
+    assert.equal(log.some((x) => x.update), false)
+    assert.equal(await rememberCanvasHost(db, "u1", "not a host"), false)
 })
 
 // ---- Apple --------------------------------------------------------------------
