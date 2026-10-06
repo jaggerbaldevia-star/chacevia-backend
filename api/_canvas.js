@@ -30,12 +30,16 @@ export function canvasEnabled() {
 // CANVAS_ENABLED=1 to test, forgets the list, and it's live for every user at
 // once. Opening this to everyone should take a deliberate edit, which is what
 // CANVAS_BETA_USERS=* is for.
+//
+// CANVAS_TEST_USERS is a second, additive list for test accounts, so adding one
+// never means rewriting the beta list (whose value Vercel won't show back).
 export function canvasAllowed(userId) {
     if (!canvasEnabled()) return false
     const raw = String(process.env.CANVAS_BETA_USERS || "").trim()
-    if (!raw) return false
     if (raw === "*") return true
-    return raw
+    const extra = String(process.env.CANVAS_TEST_USERS || "").trim()
+    return [raw, extra]
+        .join(",")
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean)
