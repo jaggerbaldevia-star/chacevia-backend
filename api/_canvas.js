@@ -826,3 +826,59 @@ export async function removeCanvasData(db, userId) {
     await db.from("assignments").delete().eq("user_id", userId).eq("source", "canvas")
     await db.from("classes").delete().eq("user_id", userId).eq("source", "canvas")
 }
+
+// ---------------------------------------------------------------------
+// Stale work
+// ---------------------------------------------------------------------
+// The feed can't see work handed in on paper (or anywhere but Canvas), so an
+// imported assignment stays "open" forever once its date passes. Two fixes:
+//   - on connect, everything already past due is archived as done
+//     (done_source 'canvas_backfill'); the app lists them so any can be undone;
+//   - after that, Rocco asks once "did you turn in X?" (the app sets
+//     turnin_asked_at); no answer in 3 days and it's marked done quietly
+//     (done_source 'canvas_auto').
+// `source` stays 'canvas' throughout: the sync rewrites it on every run.
+
+/** Past due: its due time has passed, or (date only) its day is before today in `timeZone`. */
+export function isPastDue(row, now, timeZone) {
+    if (row && row.due_at) return new Date(row.due_at).getTime() < now.getTime()
+    if (!row || !row.due_date) return false
+    return String(row.due_date) < toLocalISODate(now, timeZone)
+}
+
+/** Archives this user's open Canvas work that's already past due. Returns how many. */
+export async function backfillPastDue(db, userId, timeZone, now = new Date()) {
+    const { data, error } = await db
+        .from("assignments")
+        .select("id, due_date, due_at")
+        .eq("user_id", userId)
+        .eq("source", "canvas")
+        .eq("done", false)
+    if (error) throw error
+    const ids = (data || []).filter((r) => isPastDue(r, now, timeZone)).map((r) => r.id)
+    for (let i = 0; i < ids.length; i += 200) {
+        const { error: upErr } = await db
+            .from("assignments")
+            .update({ done: true, done_source: "canvas_backfill", done_at: now.toISOString() })
+            .eq("user_id", userId)
+            .in("id", ids.slice(i, i + 200))
+        if (upErr) throw upErr
+    }
+    return ids.length
+}
+
+export const TURNIN_ANSWER_MS = 3 * 24 * 60 * 60 * 1000
+
+/** Asked "did you turn it in?" over 3 days ago and never answered → done, quietly. All users. */
+export async function autoDoneUnanswered(db, now = new Date()) {
+    const cutoff = new Date(now.getTime() - TURNIN_ANSWER_MS).toISOString()
+    const { data, error } = await db
+        .from("assignments")
+        .update({ done: true, done_source: "canvas_auto", done_at: now.toISOString() })
+        .eq("source", "canvas")
+        .eq("done", false)
+        .lt("turnin_asked_at", cutoff)
+        .select("id")
+    if (error) throw error
+    return (data || []).length
+}

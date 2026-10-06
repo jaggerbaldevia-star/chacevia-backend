@@ -32,6 +32,8 @@ import { buildPaper, userTz } from "./_paper.js"
 import { localParts } from "./_schedule.js"
 import { CATCHUP_MAX_IMAGES, CATCHUP_MAX_IMAGE_CHARS, catchupRules, cleanRows, matchRows } from "./_catchup.js"
 import {
+    autoDoneUnanswered,
+    backfillPastDue,
     canvasAllowed,
     canvasEnabled,
     CanvasError,
@@ -388,11 +390,22 @@ async function handleCanvasConnect(req, res, body) {
         console.warn("[canvas] remember host failed:", err && err.message)
     }
 
+    // First connect (or a reconnect): work that's already past due is almost
+    // always handed in, and Canvas can't tell us. Archive it (undoable in the
+    // app). Best-effort: a failure here leaves it open, never fails the connect.
+    let backfilled = 0
+    try {
+        backfilled = await backfillPastDue(db, userId, body && body.tz)
+    } catch (err) {
+        console.warn("[canvas] backfill failed:", err && err.message)
+    }
+
     return res.status(200).json({
         connected: true,
         host: feedUrl.hostname,
         imported: result.imported,
         classes: result.classes,
+        backfilled,
         lastSyncAt: new Date().toISOString(),
     })
 }
@@ -811,6 +824,13 @@ async function handleCanvasCron(req, res) {
     if (!secret || given !== secret) return res.status(401).json({ error: "Unauthorized." })
 
     const db = svc()
+    // "Did you turn in X?" asked over 3 days ago with no answer → done, quietly.
+    let autoDone = 0
+    try {
+        autoDone = await autoDoneUnanswered(db)
+    } catch (err) {
+        console.warn("[canvas] auto-done failed:", err && err.message)
+    }
     const cutoff = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString()
     const { data: due } = await db
         .from("canvas_links")
@@ -846,7 +866,7 @@ async function handleCanvasCron(req, res) {
                 .eq("user_id", link.user_id)
         }
     }
-    return res.status(200).json({ ok, failed, considered: (due || []).length })
+    return res.status(200).json({ ok, failed, considered: (due || []).length, autoDone })
 }
 
 // ---------------------------------------------------------------------
