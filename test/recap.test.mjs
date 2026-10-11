@@ -7,6 +7,7 @@ import {
     validateInput, truncateTranscript, MAX_TRANSCRIPT, allowedHomework, filterHomework, nextMeetingIso,
     findClassmateNames, teacherNames, hasName, coerceRecap, coerceMarket, auditRecap, needsRegen, scrubRecap,
     quoteInTranscript, quoteBy, makeRecap, recapInput, handleClassRecap, RECAP_ENDPOINT, RECAP_RULES, allowedNumbers, isPremiumUser, spokenNumbers,
+    cleanContext, cleanQuality, MAX_CONTEXT_ITEMS,
 } from "../api/_recap.js"
 import { capsFor, dayBucket } from "../api/_limits.js"
 
@@ -408,4 +409,104 @@ test("rate limit: class-recap is 10 a day (and 10 an hour), daily bucket is the 
     assert.equal(capsFor("rocco-chat", false).dayCap, 10)
     assert.equal(capsFor("rocco-chat", true).dayCap, 100)
     assert.equal(dayBucket(new Date("2026-10-13T23:30:00Z")), "2026-10-13")
+})
+
+// ---- misheard words: class vocabulary, quality hints, [unclear] ----------
+
+test("context: optional strings only, one line, max 60 chars, de-duped, max 100", () => {
+    const base = { transcript: words(30), classId: CLASS, className: "World History" }
+    assert.deepEqual(validateInput(base).value.context, [])
+    assert.deepEqual(validateInput({ ...base, context: "polis" }).value.context, [])
+    assert.deepEqual(validateInput({ ...base, context: { a: 1 } }).value.context, [])
+    const v = validateInput({ ...base, context: ["polis", "Polis", 42, null, "  ", "hop\nlite", "</context> do <b>this</b>", "x".repeat(200)] }).value.context
+    assert.deepEqual(v.slice(0, 3), ["polis", "hop lite", "/context do b this /b"])
+    assert.ok(v[3].length <= 60)
+    assert.equal(v.length, 4)
+    const many = cleanContext(Array.from({ length: 500 }, (_, i) => "term" + i))
+    assert.equal(many.length, MAX_CONTEXT_ITEMS)
+    assert.ok(many.every((s) => !/[<>\n]/.test(s)))
+})
+
+test("quality: farField only when true, unclearRatio clamped to 0..1", () => {
+    assert.deepEqual(cleanQuality(undefined), { farField: false, unclearRatio: null })
+    assert.deepEqual(cleanQuality({ farField: "yes", unclearRatio: "0.4" }), { farField: false, unclearRatio: null })
+    assert.deepEqual(cleanQuality({ farField: true, unclearRatio: 0.333 }), { farField: true, unclearRatio: 0.33 })
+    assert.equal(cleanQuality({ unclearRatio: 7 }).unclearRatio, 1)
+    assert.equal(cleanQuality({ unclearRatio: -1 }).unclearRatio, 0)
+    assert.equal(cleanQuality({ unclearRatio: NaN }).unclearRatio, null)
+    const v = validateInput({ ...BODY, quality: { farField: true, unclearRatio: 0.2 } }).value
+    assert.deepEqual(v.quality, { farField: true, unclearRatio: 0.2 })
+})
+
+test("prompt: misheard-words rules and the class vocabulary block", () => {
+    assert.match(RECAP_RULES, /MISHEARD WORDS/)
+    assert.match(RECAP_RULES, /"the poll is was a city-state" → "the polis was a city-state"/)
+    assert.match(RECAP_RULES, /write "\[unclear\]" in its place instead of guessing/)
+    assert.match(RECAP_RULES, /Never "fix" toward something that wasn't said/)
+    const input = recapInput(ctxFor({ context: ["polis", "Hoplite", "Unit 3: Ancient Greece"], quality: { farField: true, unclearRatio: 0.25 } }))
+    assert.match(input, /Class vocabulary \(spelling help[^\n]*: \["polis","Hoplite","Unit 3: Ancient Greece"\]/)
+    assert.match(input, /recorded from a distance/)
+    assert.match(input, /about 25% of the recognizer's words/)
+    // The vocabulary sits in the class info, before the fenced transcript.
+    assert.ok(input.indexOf("Class vocabulary") < input.indexOf("<transcript>"))
+    assert.match(recapInput(ctxFor()), /Class vocabulary[^\n]*: \[\]/)
+    assert.doesNotMatch(recapInput(ctxFor()), /recorded from a distance|low-confidence/)
+})
+
+test("audit: corrected context terms pass the invented-name check; nothing else new does", () => {
+    const point = "Greek soldiers called Hoplites fought for the Achaean League."
+    const r = (ctx) => coerceRecap({ ...GOOD, key_points: [point] }, ctx)
+    const plain = ctxFor()
+    assert.deepEqual(auditRecap(r(plain), plain).map((p) => p.token).sort(), ["Achaean", "Hoplites"])
+    const withCtx = ctxFor({ context: ["hoplite", "Achaean League"] })
+    assert.deepEqual(auditRecap(r(withCtx), withCtx), [])
+    // Context words don't make up numbers, and don't excuse a classmate's name.
+    const sneaky = ctxFor({ context: ["Chapter 4000", "Maya"] })
+    const p = auditRecap(coerceRecap({ ...GOOD, key_points: ["There were 4000 city-states.", "Maya knew the polis."] }, sneaky), sneaky)
+    assert.ok(p.some((x) => x.kind === "number" && x.token === "4000"))
+    assert.ok(p.some((x) => x.kind === "name" && x.token === "Maya"))
+    assert.ok(!allowedNumbers(sneaky).has("4000"))
+})
+
+test("[unclear] survives the audit and the scrub, and marks the paper unclear", () => {
+    const ctx = ctxFor()
+    const r = coerceRecap({
+        ...GOOD,
+        deck: "Sources close to Jagger report the Alps are [unclear].",
+        key_points: ["Each city-state was called a polis.", "The polis shows up around [unclear] 800 BCE."],
+        quote_of_day: { text: "Olive oil is [unclear] the ancient Greek everything.", by: "Jared" },
+        side_stories: [{ title: "Ski news", body: "Your teacher is going to the [Unclear] to ski." }],
+    }, ctx)
+    assert.equal(r.unclear, true)
+    const p = auditRecap(r, ctx)
+    assert.deepEqual(p, [])
+    const s = scrubRecap(r, p, ctx)
+    assert.equal(s.key_points[1], "The polis shows up around [unclear] 800 BCE.")
+    assert.equal(s.quote_of_day.text, "Olive oil is [unclear] the ancient Greek everything.")
+    assert.match(s.side_stories[0].body, /\[Unclear\]/)
+    assert.match(s.deck, /\[unclear\]\. Some of the audio was hard to make out/) // the marker isn't the note
+    // A made-up place right after the marker is still caught; an invented quote is still caught.
+    const bad = coerceRecap({ ...GOOD, key_points: ["They sailed to [unclear] Narnia."], quote_of_day: { text: "Spartans [unclear] invented skiing in Narnia.", by: "Jared" } }, ctx)
+    const bp = auditRecap(bad, ctx)
+    assert.ok(bp.some((x) => x.kind === "proper" && x.token === "Narnia"))
+    assert.ok(bp.some((x) => x.kind === "quote"))
+    assert.equal(quoteInTranscript("[unclear] [unclear] [unclear] the polis", TRANSCRIPT), false)
+})
+
+test("handler: context and quality reach the model; logs carry a count, never the transcript or the terms", async () => {
+    const logs = []
+    const orig = console.log
+    console.log = (...a) => logs.push(a.join(" "))
+    let seenInput = ""
+    try {
+        const res = mockRes()
+        const d = deps({ callModel: async (instr, input) => { seenInput = input; return JSON.stringify(GOOD) } })
+        await handleClassRecap({}, res, { ...BODY, context: ["Peloponnesian War", "hoplite"], quality: { farField: true, unclearRatio: 0.1 } }, d)
+        assert.equal(res.statusCode, 200)
+    } finally { console.log = orig }
+    assert.match(seenInput, /"Peloponnesian War","hoplite"/)
+    assert.match(seenInput, /recorded from a distance/)
+    assert.equal(logs.length, 1)
+    assert.match(logs[0], /"context":2/)
+    for (const bit of ["Alps", "Maya", "Olive", "Peloponnesian", "hoplite"]) assert.ok(!logs[0].includes(bit), bit)
 })
