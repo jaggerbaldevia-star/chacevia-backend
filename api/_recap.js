@@ -626,14 +626,16 @@ export function stricterRules(problems) {
 
 /** The model call: same OpenAI client and model tier as Rocco and the paper. */
 export async function callRecapModel(instructions, input) {
-    const effort = process.env.RECAP_EFFORT || "low"
+    // Same call shape as the Morning Paper (api/_paper.js), which is proven in
+    // production: plain instructions + input; the rules ask for ONE JSON object
+    // and parseJson() + the JSON retry handle the rest.
+    const effort = process.env.RECAP_EFFORT || ""
     const resp = await withRetry(
         () => ai().responses.create({
             model: process.env.RECAP_MODEL || MODELS.smart,
             instructions,
             input,
-            text: { format: { type: "json_object" } },
-            ...(effort !== "default" ? { reasoning: { effort } } : {}),
+            ...(effort ? { reasoning: { effort } } : {}),
         }),
         { label: "class-recap", tries: 2 }
     )
@@ -766,7 +768,10 @@ export async function handleClassRecap(req, res, body, deps = realDeps()) {
         }))
         return res.status(200).json({ recap })
     } catch (err) {
-        console.error("class-recap error:", (err && (err.code || err.status || err.name)) || "unknown", Date.now() - t0 + "ms")
+        // The provider's own error text says what was wrong with the request; it
+        // never contains the transcript. Clipped, and still no user content.
+        const why = err && err.error && err.error.message ? String(err.error.message).slice(0, 160) : ""
+        console.error("class-recap error:", (err && (err.code || err.status || err.name)) || "unknown", Date.now() - t0 + "ms", why)
         return res.status(502).json({ error: "The presses jammed on this one. Try again in a minute." })
     }
 }
