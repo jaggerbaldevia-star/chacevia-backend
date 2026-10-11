@@ -102,6 +102,10 @@
     {
       "source": "/api/apple-token",
       "destination": "/api/account?action=apple-token"
+    },
+    {
+      "source": "/api/class-recap",
+      "destination": "/api/schedule-extract?action=class-recap"
     }
   ],
   "headers": [

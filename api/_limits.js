@@ -48,6 +48,8 @@ const LIMITS = {
     "rocco-memory": 60,
     // One per Sign in with Apple; a handful covers re-installs.
     "apple-token": 10,
+    // Afternoon Edition: one recap per recorded class period. Premium only.
+    "class-recap": 10,
     default: 30,
 }
 
@@ -63,9 +65,29 @@ const LIMITS = {
 // "unlimited" means no product limit, not no safety limit.
 const DAILY_LIMITS = {
     "rocco-chat": 100,
+    // Ten class periods a day is more than any school day has.
+    "class-recap": 10,
 }
 const FREE_DAILY_LIMITS = {
     "rocco-chat": 10,
+}
+
+// A daily refusal in the endpoint's own words. Without one, the Rocco wording
+// below is used.
+const DAILY_ERRORS = {
+    "class-recap": "That's 10 afternoon editions today. The presses need a rest. Back tomorrow!",
+}
+
+/** Pure. The hourly and daily caps for one endpoint and plan. */
+export function capsFor(endpoint, premium) {
+    const hourCap = LIMITS[endpoint] || LIMITS.default
+    const planned = FREE_DAILY_LIMITS[endpoint] !== undefined
+    const dayCap = planned
+        ? premium
+            ? DAILY_LIMITS[endpoint]
+            : FREE_DAILY_LIMITS[endpoint]
+        : DAILY_LIMITS[endpoint] || null
+    return { hourCap, dayCap, planned }
 }
 
 // One entitlement read, and only for endpoints whose cap actually differs by
@@ -99,7 +121,7 @@ function hourBucket(d = new Date()) {
 // 10 chars vs the hour bucket's 13, so the two can never collide. No suffix on
 // purpose: if usage_counters.bucket is ever a timestamp rather than text, a
 // plain date still casts and "2026-09-28:day" would not.
-function dayBucket(d = new Date()) {
+export function dayBucket(d = new Date()) {
     return d.toISOString().slice(0, 10) // 2026-09-28
 }
 
@@ -137,14 +159,9 @@ export async function checkLimit(userId, endpoint) {
     }
 
     const now = new Date()
-    const hourCap = LIMITS[endpoint] || LIMITS.default
     const planned = FREE_DAILY_LIMITS[endpoint] !== undefined
     const premium = planned ? await isUserPremium(userId) : false
-    const dayCap = planned
-        ? premium
-            ? DAILY_LIMITS[endpoint]
-            : FREE_DAILY_LIMITS[endpoint]
-        : DAILY_LIMITS[endpoint] || null
+    const { hourCap, dayCap } = capsFor(endpoint, premium)
 
     let hourUsed
     let dayUsed = null
@@ -167,6 +184,13 @@ export async function checkLimit(userId, endpoint) {
 
     // Daily first: it's the more informative refusal. Being told "come back
     // tomorrow" beats "wait an hour" when an hour won't be enough.
+    if (dayCap && dayUsed > dayCap && DAILY_ERRORS[endpoint]) {
+        return {
+            ok: false,
+            status: 429,
+            payload: { error: DAILY_ERRORS[endpoint], rateLimited: true, dailyLimit: true, upgradeable: false },
+        }
+    }
     if (dayCap && dayUsed > dayCap) {
         return {
             ok: false,

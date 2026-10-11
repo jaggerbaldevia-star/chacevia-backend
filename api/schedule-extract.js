@@ -46,6 +46,7 @@ import {
     removeCanvasData,
 } from "./_canvas.js"
 import { rememberCanvasHost } from "./_schools.js"
+import { handleClassRecap } from "./_recap.js"
 
 export const config = { maxDuration: 60 }
 const COIN_COST = 0 // free; requireCoins still enforces login + rate limit
@@ -1062,5 +1063,7 @@ export default async function handler(req, res) {
     if (action === "canvas-feed-audit") return handleCanvasFeedAudit(req, res, body)
     if (action === "shorten") return handleShorten(req, res, body)
     if (action === "shorten-backfill") return handleShortenBackfill(req, res, body)
+    // Afternoon Edition (1.2): see api/_recap.js. Lives here for the 60 s budget.
+    if (action === "class-recap") return handleClassRecap(req, res, body)
     return handleScheduleExtract(req, res, body)
 }
