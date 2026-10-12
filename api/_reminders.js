@@ -14,12 +14,17 @@
 //     student's own reminders until they open the app again
 //   - opt-in "anything to log?" prompts after each class, or once after school
 //   - a tap opens that assignment (data.assignmentId); never a paywall
+//   - standalone reminders (no assignment: "remind me to sharpen my pencil
+//     during lunch") say the student's own words plus the moment ("Lunch is
+//     starting"). They are always the student's own, so the cap and the pause
+//     never hold them back. Until migrations/20261012_01 is applied the
+//     scheduler can't return such rows, and nothing here changes.
 //
 // The pure functions are exported for tests; `dispatch` takes its database
 // and its push sender as arguments for the same reason.
 
-import { REMINDER_LINES, SIGN_OFF_LINE, AFTER_CLASS_LINES, AFTER_SCHOOL_LINES } from "./_rocco_lines.js"
-import { addDaysIso, classesOn, daysBetween, endOf, isoToDate, localParts, periodNum } from "./_schedule.js"
+import { REMINDER_LINES, SIGN_OFF_LINE, AFTER_CLASS_LINES, AFTER_SCHOOL_LINES, STANDALONE_LINES, STANDALONE_CTX_LINES } from "./_rocco_lines.js"
+import { addDaysIso, classesOn, daysBetween, endOf, isoToDate, localParts, periodNum, slotOn } from "./_schedule.js"
 
 export const DEFAULT_CAP = 4
 export const IGNORE_DAYS = 5
@@ -121,6 +126,39 @@ export function classFor(full, short) {
     return cap1(String(short || "").trim()) || n || "school"
 }
 
+/** A reminder with no assignment behind it: the student's own, standalone. */
+export const isStandalone = (r) => r.r_assignment == null
+/** The student set it up (or it's standalone, which they always did). */
+const isOwn = (r) => !!r.r_user_set || isStandalone(r)
+
+/**
+ * The moment a standalone reminder is about, from the class it names and the
+ * schedule: "Lunch is starting", "History starts in 5 min", "Bio just ended".
+ * null when it isn't tied to a class meeting (then the title says it all).
+ */
+export function standaloneContext(row, sched, tz) {
+    if (!row.r_class || !sched) return null
+    const classes = sched.classes || []
+    const cls = classes.find((c) => String(c.id) === String(row.r_class))
+    const name = classFor(row.r_class_name || (cls && cls.name), row.r_class_short || (cls && cls.short_name))
+    if (!cls) return null
+    const local = localParts(new Date(row.r_fire), tz)
+    const slot = slotOn(local.iso, cls, classes, sched.pattern)
+    if (!slot) return null
+    const lead = slot.start - local.minutes
+    if (lead >= -1 && lead <= 1) return `${name} is starting`
+    if (lead > 1 && lead <= 30) return `${name} starts in ${lead} min`
+    const end = slot.end != null ? slot.end : slot.start + 50
+    if (Math.abs(local.minutes - end) <= 2) return `${name} just ended`
+    return null
+}
+
+/** The push line for a standalone reminder. */
+export function standaloneBody(row, ctx, template) {
+    const title = String(row.r_title || "").trim().replace(/[.!?\s]+$/, "") || "your reminder"
+    return fillLine(template, { title, ctx: ctx || "" })
+}
+
 /**
  * One run. `store` is the database (see makeStore), `send` posts an array of
  * Expo messages and returns their tickets in order.
@@ -150,7 +188,9 @@ export async function dispatch({ store, send, now = new Date(), rand = Math.rand
         const toks = tokens.get(uid) || []
 
         // Own reminders first, then soonest first.
-        mine.sort((a, b) => (b.r_user_set ? 1 : 0) - (a.r_user_set ? 1 : 0) || new Date(a.r_fire) - new Date(b.r_fire))
+        mine.sort((a, b) => (isOwn(b) ? 1 : 0) - (isOwn(a) ? 1 : 0) || new Date(a.r_fire) - new Date(b.r_fire))
+        let schedP = null
+        const schedule = () => (schedP ||= store.schedule(uid))
 
         const deliver = async (row, body, data, categoryId) => {
             const status = toks.length ? "sent" : "no-token"
@@ -166,7 +206,7 @@ export async function dispatch({ store, send, now = new Date(), rand = Math.rand
 
         const fresh = mine.filter((r) => now.getTime() - new Date(r.r_fire).getTime() <= STALE_MS)
         summary.stale += mine.length - fresh.length
-        const wantsAuto = fresh.some((r) => !r.r_done && !r.r_user_set) || (p.after_class && p.after_class !== "off")
+        const wantsAuto = fresh.some((r) => !r.r_done && !isOwn(r)) || (p.after_class && p.after_class !== "off")
 
         // Five ignored days: say so once, then step back.
         if (!paused && wantsAuto && ignoredStreak(ulogs, p.last_seen_at, local.iso, tz) >= IGNORE_DAYS) {
@@ -177,6 +217,19 @@ export async function dispatch({ store, send, now = new Date(), rand = Math.rand
         }
 
         for (const r of fresh) {
+            if (isStandalone(r)) {
+                // The student's own: no assignment to be done, never paused or
+                // capped, but it still counts toward today's total.
+                const base = { kind: "reminder", reminder_id: r.r_id, assignment_id: null, class_id: r.r_class || null }
+                let ctx = null
+                if (r.r_class) {
+                    try { ctx = standaloneContext(r, await schedule(), tz) } catch (e) { ctx = null }
+                }
+                const template = pickTemplate(ctx ? STANDALONE_CTX_LINES : STANDALONE_LINES, recent, now, rand)
+                recent.push({ template, sent_at: now.toISOString() })
+                await deliver({ ...base, template }, standaloneBody(r, ctx, template), { type: "reminder", reminderId: r.r_id, classId: r.r_class || null }, null)
+                continue
+            }
             if (r.r_done) {
                 summary.done++
                 continue
@@ -205,7 +258,7 @@ export async function dispatch({ store, send, now = new Date(), rand = Math.rand
         // "Anything to log?" after class — Rocco's own idea, so it obeys both
         // the pause and the cap.
         if (p.after_class && p.after_class !== "off" && !paused) {
-            const sched = await store.schedule(uid)
+            const sched = await schedule()
             for (const due of afterClassDue(now, tz, p.after_class, sched.classes, sched.pattern)) {
                 if (sentToday >= cap) {
                     summary.capped++

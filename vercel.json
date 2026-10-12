@@ -106,6 +106,10 @@
     {
       "source": "/api/class-recap",
       "destination": "/api/schedule-extract?action=class-recap"
+    },
+    {
+      "source": "/api/parse-add",
+      "destination": "/api/schedule-extract?action=parse-add"
     }
   ],
   "headers": [

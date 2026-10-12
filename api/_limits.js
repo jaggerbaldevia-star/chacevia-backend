@@ -50,6 +50,8 @@ const LIMITS = {
     "apple-token": 10,
     // Afternoon Edition: one recap per recorded class period. Premium only.
     "class-recap": 10,
+    // Quick add: one model call that only reads the student's schedule.
+    "parse-add": 60,
     default: 30,
 }
 

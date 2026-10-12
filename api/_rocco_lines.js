@@ -114,6 +114,27 @@ export const AFTER_SCHOOL_LINES = [
     "Day's done. Anything to add before you forget?",
 ]
 
+// The student's own standalone reminders ("remind me to sharpen my pencil
+// during lunch"). {title} is what they asked to be reminded of, in their words.
+// {ctx} is a short note about the moment ("Lunch is starting", "History starts
+// in 5 min"), only used when there is one.
+export const STANDALONE_CTX_LINES = [
+    "{title} — {ctx}.",
+    "{ctx}. You asked me to say: {title}.",
+    "{title}. {ctx}. You told me to tell you.",
+    "{ctx}! Quick: {title}.",
+    "Reminder you set: {title}. {ctx}.",
+    "{title}. That's the reminder. {ctx}.",
+]
+export const STANDALONE_LINES = [
+    "{title}. You asked me to remind you, so: reminding.",
+    "Reminder you set: {title}.",
+    "Hey. {title}. That's the whole message.",
+    "Your reminder, delivered by a very small blob: {title}.",
+    "{title}. You told me to tell you. Telling you.",
+    "Ding! {title}.",
+]
+
 // Words that must never appear in any line above (case-insensitive).
 export const BANNED_WORDS = [
     "quitter", "quit on", "disappoint", "ashamed", "shame", "guilt", "lazy",

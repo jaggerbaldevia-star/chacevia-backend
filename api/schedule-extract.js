@@ -47,6 +47,7 @@ import {
 } from "./_canvas.js"
 import { rememberCanvasHost } from "./_schools.js"
 import { handleClassRecap } from "./_recap.js"
+import { handleParseAdd } from "./_parse_add.js"
 
 export const config = { maxDuration: 60 }
 const COIN_COST = 0 // free; requireCoins still enforces login + rate limit
@@ -1065,5 +1066,7 @@ export default async function handler(req, res) {
     if (action === "shorten-backfill") return handleShortenBackfill(req, res, body)
     // Afternoon Edition (1.2): see api/_recap.js. Lives here for the 60 s budget.
     if (action === "class-recap") return handleClassRecap(req, res, body)
+    // Quick add from plain words: see api/_parse_add.js. Reads only; never writes.
+    if (action === "parse-add") return handleParseAdd(req, res, body)
     return handleScheduleExtract(req, res, body)
 }

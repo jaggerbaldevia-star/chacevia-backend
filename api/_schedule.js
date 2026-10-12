@@ -136,6 +136,40 @@ export function classesOn(iso, classes, pattern) {
         .sort((a, b) => a.start - b.start)
 }
 
+/**
+ * One class's slot on a local date: { start, end } in minutes, or null when it
+ * doesn't meet. Same answer as classesOn, plus one case classesOn leaves out:
+ * a class with no period number (Lunch, Advisory) on a rotation day, which
+ * meets when its days name that label, name that weekday, or list no days.
+ */
+export function slotOn(iso, cls, classes, pattern) {
+    if (!cls) return null
+    const row = classesOn(iso, classes, pattern).find((r) => r.cls && String(r.cls.id) === String(cls.id))
+    if (row) return { start: row.start, end: row.end }
+    const label = labelOn(iso, pattern)
+    if (!label || !rotationSlots(label) || periodNum(cls.period) != null) return null
+    const start = parseHM(cls.start_time)
+    if (start == null) return null
+    const days = cls.days || []
+    const want = String(label).trim().toLowerCase()
+    const weekday = DOW_LABEL[isoToDate(iso).getUTCDay()]
+    if (days.length && !days.some((d) => String(d).trim().toLowerCase() === want || sameDayLabel(d, weekday))) return null
+    return { start, end: parseHM(cls.end_time) }
+}
+
+/** The instant that is `minutes` past local midnight on `iso` in `tz`. */
+export function zonedToUtc(iso, minutes, tz) {
+    const [y, m, d] = iso.split("-").map(Number)
+    const wall = Date.UTC(y, m - 1, d, 0, minutes)
+    const offsetAt = (t) => {
+        const p = localParts(new Date(t), tz)
+        return Date.UTC(...p.iso.split("-").map((n, i) => Number(n) - (i === 1 ? 1 : 0)), 0, p.minutes) - t
+    }
+    let t = wall - offsetAt(wall)
+    t = wall - offsetAt(t) // once more, in case a DST change sits between the two
+    return new Date(t)
+}
+
 /** When a class lets out: its end time, or 50 minutes after it starts. */
 export function endOf(row) {
     return row.end != null ? row.end : row.start + 50
