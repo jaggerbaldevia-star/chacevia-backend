@@ -1,5 +1,5 @@
 -- Standalone reminders ("remind me to sharpen my pencil during lunch").
--- NOT APPLIED — Jagger runs this himself (Supabase dashboard → SQL editor).
+-- APPLIED 2026-10-12 (as migration "standalone_reminders"). Pre-change function: backup_20261012_claim_due_reminders_before_standalone.sql
 --
 -- Today every reminder must belong to an assignment (assignment_id NOT NULL)
 -- and the scheduler (claim_due_reminders) INNER JOINs assignments. This lets a
