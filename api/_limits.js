@@ -52,6 +52,10 @@ const LIMITS = {
     "class-recap": 10,
     // Quick add: one model call that only reads the student's schedule.
     "parse-add": 60,
+    // Dictation cleanup: one short model call per thing the student says.
+    "clean-dictation": 120,
+    // Teacher's instructions → organized blocks. The app caches by hash.
+    "clean-assignment": 60,
     default: 30,
 }
 

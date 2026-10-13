@@ -110,6 +110,14 @@
     {
       "source": "/api/parse-add",
       "destination": "/api/schedule-extract?action=parse-add"
+    },
+    {
+      "source": "/api/clean-dictation",
+      "destination": "/api/schedule-extract?action=clean-dictation"
+    },
+    {
+      "source": "/api/clean-assignment",
+      "destination": "/api/schedule-extract?action=clean-assignment"
     }
   ],
   "headers": [

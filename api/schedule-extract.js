@@ -48,6 +48,7 @@ import {
 import { rememberCanvasHost } from "./_schools.js"
 import { handleClassRecap } from "./_recap.js"
 import { handleParseAdd } from "./_parse_add.js"
+import { handleCleanDictation, handleCleanAssignment } from "./_clean.js"
 
 export const config = { maxDuration: 60 }
 const COIN_COST = 0 // free; requireCoins still enforces login + rate limit
@@ -1068,5 +1069,8 @@ export default async function handler(req, res) {
     if (action === "class-recap") return handleClassRecap(req, res, body)
     // Quick add from plain words: see api/_parse_add.js. Reads only; never writes.
     if (action === "parse-add") return handleParseAdd(req, res, body)
+    // Dictation cleanup and organized teacher instructions: see api/_clean.js.
+    if (action === "clean-dictation") return handleCleanDictation(req, res, body)
+    if (action === "clean-assignment") return handleCleanAssignment(req, res, body)
     return handleScheduleExtract(req, res, body)
 }

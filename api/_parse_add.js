@@ -516,6 +516,19 @@ export function shapeItem(it) {
 // The handler
 // ---------------------------------------------------------------------------
 
+/** The student's classes + schedule_meta, service role. Shared with api/_clean.js. */
+export async function loadSchedule(uid) {
+    if (!uid) return { classes: [], pattern: null }
+    const { svc } = await import("./_coins.js")
+    const db = svc()
+    const [c, m] = await Promise.all([
+        db.from("classes").select("id, name, short_name, period, start_time, end_time, days").eq("user_id", uid).order("sort_order"),
+        db.from("schedule_meta").select("cycle_labels, skip_weekends, anchor_date, anchor_label, notes").eq("user_id", uid).maybeSingle(),
+    ])
+    if (c.error) throw c.error
+    return { classes: c.data || [], pattern: (m && m.data) || null }
+}
+
 function realDeps() {
     return {
         configured: () => !!process.env.OPENAI_API_KEY,
@@ -527,17 +540,7 @@ function realDeps() {
             const { userTz } = await import("./_rocco_context.js")
             return userTz(uid, sent)
         },
-        loadSchedule: async (uid) => {
-            if (!uid) return { classes: [], pattern: null }
-            const { svc } = await import("./_coins.js")
-            const db = svc()
-            const [c, m] = await Promise.all([
-                db.from("classes").select("id, name, short_name, period, start_time, end_time, days").eq("user_id", uid).order("sort_order"),
-                db.from("schedule_meta").select("cycle_labels, skip_weekends, anchor_date, anchor_label, notes").eq("user_id", uid).maybeSingle(),
-            ])
-            if (c.error) throw c.error
-            return { classes: c.data || [], pattern: (m && m.data) || null }
-        },
+        loadSchedule,
         callModel: async (instructions, input) => {
             const { MODELS, withRetry, ai } = await import("./_ai.js")
             const resp = await withRetry(
