@@ -381,3 +381,15 @@ test("assignment handler: empty details skip the model; 404 for someone else's; 
     await handleCleanAssignment({}, bad, { assignmentId: "nope" }, asgDeps())
     assert.equal(bad.code, 400)
 })
+
+test("dropEchoes: drops Title:/Class:/Due: lines and the heading they leave empty", async () => {
+    const { dropEchoes } = await import("../api/_clean.js")
+    const out = dropEchoes([
+        { type: "heading", text: "Grading" },
+        { type: "bullet", text: "Thesis 10 pts." },
+        { type: "heading", text: "Class Info" },
+        { type: "bullet", text: "Title: Unit 3 Essay" },
+        { type: "bullet", text: "Class: World History" },
+    ])
+    assert.deepEqual(out, [{ type: "heading", text: "Grading" }, { type: "bullet", text: "Thesis 10 pts." }])
+})

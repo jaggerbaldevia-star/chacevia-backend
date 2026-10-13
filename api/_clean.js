@@ -472,10 +472,21 @@ export function fallbackBlocks(details) {
 }
 
 /** Pure. Model output → { blocks, missing } with every check applied, or null if it's unusable. */
+/**
+ * Pure. Lines that only restate what the sheet already shows on top
+ * ("Title: …", "Class: …", "Due: …"), and any heading left with nothing
+ * under it once they're gone.
+ */
+const ECHO = /^(title|assignment|class|course|due|due date)\s*:/i
+export function dropEchoes(blocks) {
+    const kept = blocks.filter((b) => !((b.type === "bullet" || b.type === "text") && ECHO.test(b.text)))
+    return kept.filter((b, i) => b.type !== "heading" || (i + 1 < kept.length && kept[i + 1].type !== "heading"))
+}
+
 export function finishBlocks(raw, ctx) {
     const parsed = parseModelJson(raw)
     if (!parsed) return null
-    const blocks = addMissingLinks(sanitizeBlocks(parsed, ctx), ctx.details)
+    const blocks = addMissingLinks(dropEchoes(sanitizeBlocks(parsed, ctx)), ctx.details)
     // Unusable: nothing at all, or only links when the teacher also wrote words.
     const wrote = /[\p{L}\p{N}]/u.test(stripLinks(ctx.details))
     if (!blocks.some((b) => b.type !== "heading" && (b.type !== "link" || !wrote))) return null
@@ -498,6 +509,7 @@ Each block is exactly one of:
 
 How to organize:
 - Usual sections, in this order, skipping any that would be empty: "What to do" (steps), "Requirements" (length, format, sources, file type, font), "Grading" (points, rubric, percentages), "Links", "From your teacher" (encouragement, reminders, office hours, anything personal). Use another short heading when the teacher's text needs one.
+- The app already shows the assignment's title, class and due date above your blocks. Don't repeat them: no "Title:", "Class:" or "Due:" lines and no class-info section. If the teacher's text opens with a heading that adds something to the title (a topic, like "Causes of WWI"), keep that part as a text block at the top.
 - Copy every number exactly as the teacher wrote it: pages, chapters, problem numbers, points, percentages, word counts, dates, times. Don't turn "10/20" into "October 20" or "5 pts" into "five points".
 - Plain words and short sentences, written to the student ("Read pages 42-57."). Keep the teacher's names for things.
 - No markdown inside text (no #, *, -, or numbering), no emoji.
