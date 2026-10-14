@@ -313,8 +313,11 @@ export function decideClassLabel(body, label, guess) {
         if (!guess) return keep
         return { ...to(guess.classId, guess.className), classNote: `we think this was ${subjectName(guess.className)}` }
     }
-    // A scheduled guess: only overruled when the transcript clearly says otherwise.
-    if (guess && guess.confident && String(guess.classId) !== String(body.classId))
+    // A scheduled guess from "start now" (it always leaves a label): only
+    // overruled when the transcript clearly says otherwise. Recordings with no
+    // label (auto-start, the record screen, app builds that never show the
+    // note) keep their class.
+    if (label && guess && guess.confident && String(guess.classId) !== String(body.classId))
         return { ...to(guess.classId, guess.className), classNote: `we think this was ${subjectName(guess.className)}` }
     return keep
 }

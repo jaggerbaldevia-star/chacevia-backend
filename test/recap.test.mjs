@@ -633,13 +633,17 @@ test("decide: picked label wins; auto takes the guess with a note; schedule kept
     assert.deepEqual(decideClassLabel(auto, null, null), { classId: "auto", className: "class", teacher: null, classNote: null, changed: false })
     assert.equal(decideClassLabel(auto, cleanLabel(lbl({ classId: "auto", className: "class", picked: false })), sure).classId, C.chem.id)
 
-    // Scheduled: overruled only by a confident guess for another class.
-    const over = decideClassLabel(sched, null, sure)
+    // Scheduled from "start now" (an unpicked label): overruled only by a
+    // confident guess for another class. No label (auto-start, record screen,
+    // older apps): the schedule always stands.
+    assert.deepEqual(decideClassLabel(sched, null, sure), { classId: C.hist.id, className: "World History - Ortiz", teacher: "Mr. Ortiz", classNote: null, changed: false })
+    const unpicked = cleanLabel(lbl({ classId: C.hist.id, className: "World History - Ortiz", picked: false }))
+    const over = decideClassLabel(sched, unpicked, sure)
     assert.equal(over.classId, C.chem.id)
     assert.equal(over.teacher, null) // Mr. Ortiz doesn't teach chemistry
     assert.equal(over.classNote, "we think this was AP Chemistry")
-    assert.deepEqual(decideClassLabel(sched, null, unsure), { classId: C.hist.id, className: "World History - Ortiz", teacher: "Mr. Ortiz", classNote: null, changed: false })
-    assert.equal(decideClassLabel(sched, null, { ...sure, classId: C.hist.id }).classNote, null)
+    assert.deepEqual(decideClassLabel(sched, unpicked, unsure), { classId: C.hist.id, className: "World History - Ortiz", teacher: "Mr. Ortiz", classNote: null, changed: false })
+    assert.equal(decideClassLabel(sched, unpicked, { ...sure, classId: C.hist.id }).classNote, null)
 })
 
 function labelDeps({ label = null, classData = { classes: ALL, assignments: [] }, ...over } = {}) {
@@ -699,9 +703,9 @@ test("handler: picked label wins over the guess and is cleared once used; a stal
     assert.deepEqual(d2.calls.cleared, [])
 })
 
-test("handler: scheduled class + confident other class → relabeled with a note, teacher dropped", async () => {
+test("handler: scheduled class + confident other class → relabeled with a note, teacher dropped (start-now label present)", async () => {
     const res = mockRes()
-    const d = labelDeps()
+    const d = labelDeps({ label: { startedAt: "2026-10-13T19:10:00Z", classId: BODY.classId, className: BODY.className, picked: false, at: "2026-10-13T19:10:00Z" } })
     await handleClassRecap({}, res, { ...BODY, transcript: CHEM_TALK + " " + CHEM_TALK }, d)
     assert.equal(res.body.recap.classLabelId, C.chem.id)
     assert.equal(res.body.recap.classNote, "we think this was AP Chemistry")
