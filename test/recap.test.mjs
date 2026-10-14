@@ -8,6 +8,7 @@ import {
     findClassmateNames, teacherNames, hasName, coerceRecap, coerceMarket, auditRecap, needsRegen, scrubRecap,
     quoteInTranscript, quoteBy, makeRecap, recapInput, handleClassRecap, RECAP_ENDPOINT, RECAP_RULES, allowedNumbers, isPremiumUser, spokenNumbers,
     cleanContext, cleanQuality, MAX_CONTEXT_ITEMS,
+    guessClassFromTranscript, applicableLabel, decideClassLabel, cleanLabel, subjectFor, subjectName,
 } from "../api/_recap.js"
 import { capsFor, dayBucket } from "../api/_limits.js"
 
@@ -509,4 +510,239 @@ test("handler: context and quality reach the model; logs carry a count, never th
     assert.equal(logs.length, 1)
     assert.match(logs[0], /"context":2/)
     for (const bit of ["Alps", "Maya", "Olive", "Peloponnesian", "hoplite"]) assert.ok(!logs[0].includes(bit), bit)
+})
+
+// ---- which class was it: the student's label and the transcript guess -----
+
+const C = {
+    hist: { id: CLASS, name: "World History - Ortiz", short_name: "History", source: "manual" },
+    chem: { id: "22222222-2222-4222-8222-222222222222", name: "AP Chemistry", short_name: "Chem", source: "manual" },
+    span: { id: "33333333-3333-4333-8333-333333333333", name: "Spanish 3 Honors - Ruiz", short_name: null, source: "manual" },
+    math: { id: "44444444-4444-4444-8444-444444444444", name: "Precalculus", short_name: "Precalc", source: "manual" },
+    hall: { id: "55555555-5555-4555-8555-555555555555", name: "Study Hall", short_name: null, source: "manual" },
+    eng: { id: "66666666-6666-4666-8666-666666666666", name: "English 10", short_name: null, source: "manual" },
+}
+const ALL = [C.hist, C.chem, C.span, C.math, C.hall, C.eng]
+const CHEM_TALK = "Okay everybody, today we balance a chemical reaction. Count the atoms on each side. One mole of the reactant gives two moles of the compound. The electrons in the valence shell decide the bond, ionic or covalent. Check the periodic table for the element."
+const MATH_TALK = "Let's solve the equation. Find the slope of the linear function, then the intercept. Graph the quadratic and the polynomial. The derivative is a limit. Use sine and cosine for the angle in the triangle."
+const SPAN_TALK = "Hola clase, buenos dias. Vamos a conjugar el verbo tener en el preterite. Yo tengo, tu tienes, usted tiene. Muy bien, gracias. Que es la tarea para el lunes? Pero no hay clase el viernes porque es un dia de fiesta."
+
+test("classifier: the subject that was taught wins, confidently", () => {
+    const chem = guessClassFromTranscript(CHEM_TALK, ALL, [])
+    assert.equal(chem.classId, C.chem.id)
+    assert.equal(chem.className, "AP Chemistry")
+    assert.equal(chem.confident, true)
+    assert.ok(chem.score >= 6 && chem.score >= 1.6 * chem.runnerUp)
+    assert.equal(guessClassFromTranscript(MATH_TALK, ALL, []).classId, C.math.id)
+    assert.equal(guessClassFromTranscript(MATH_TALK, ALL, []).confident, true)
+    assert.equal(guessClassFromTranscript(TRANSCRIPT, ALL, []).classId, C.hist.id) // the Greek city-states lesson
+})
+
+test("classifier: a language class by its own common words", () => {
+    const g = guessClassFromTranscript(SPAN_TALK, ALL, [])
+    assert.equal(g.classId, C.span.id)
+    assert.equal(g.confident, true)
+    assert.equal(subjectFor("Spanish 3 Honors - Ruiz").id, "spanish")
+    assert.equal(subjectFor("AP French Language").id, "french")
+    assert.equal(subjectFor("Latin American History").id, "history")
+    assert.equal(subjectFor("Physical Education").id, "health")
+    assert.equal(subjectFor("AP Physics 1").id, "physics")
+    assert.equal(subjectFor("Homeroom"), null)
+    assert.equal(subjectName("World History - Ortiz"), "World History")
+})
+
+test("classifier: study hall / lunch / advisory are never the answer", () => {
+    const talk = "Study hall study hall, quiet please, study for your quiz, lunch is next, study study study."
+    assert.equal(guessClassFromTranscript(talk, [C.hall, { id: "l", name: "Lunch" }, { id: "a", name: "Advisory" }], []), null)
+    const g = guessClassFromTranscript(talk + " " + CHEM_TALK, ALL, [])
+    assert.equal(g.classId, C.chem.id)
+})
+
+test("classifier: weak or tied evidence is not confident; nothing at all is null", () => {
+    const weak = guessClassFromTranscript("We talked about the atom for a second and then the weekend plans and the game on Friday night everyone.", ALL, [])
+    assert.equal(weak.classId, C.chem.id)
+    assert.equal(weak.confident, false)
+    // Same evidence for two classes: a tie can never be confident.
+    const twin = [{ id: "x", name: "Chemistry A" }, { id: "y", name: "Chemistry B" }]
+    const tie = guessClassFromTranscript(CHEM_TALK, twin, [])
+    assert.equal(tie.score, tie.runnerUp)
+    assert.equal(tie.confident, false)
+    assert.equal(guessClassFromTranscript("hello there how are you all doing on this fine sunny morning okay", ALL, []), null)
+    assert.equal(guessClassFromTranscript(CHEM_TALK, [], []), null)
+    assert.equal(guessClassFromTranscript(CHEM_TALK, null, null), null)
+})
+
+test("classifier: repetition is capped, so one word said a lot isn't a landslide", () => {
+    const g = guessClassFromTranscript("atom ".repeat(200) + "and that's class, everyone.", ALL, [])
+    assert.equal(g.score, 3)
+    assert.equal(g.confident, false)
+})
+
+test("classifier: words from the class's own assignment titles count", () => {
+    const talk = "Remember the Gatsby symbols, the green light and the valley of ashes. Daisy and Gatsby. The green light at the end of the dock. Fitzgerald wrote it in the twenties."
+    const noTitles = guessClassFromTranscript(talk, [C.eng, C.hist], [])
+    const withTitles = guessClassFromTranscript(talk, [C.eng, C.hist], [
+        { title: "Gatsby chapter 5 reading questions", class_id: C.eng.id },
+        { title: "Fitzgerald context essay: Daisy and the green light", class_id: C.eng.id },
+        { title: "Unit 3 review worksheet", class_id: C.hist.id },
+    ])
+    assert.equal(withTitles.classId, C.eng.id)
+    assert.ok(withTitles.score > ((noTitles && noTitles.score) || 0))
+    assert.equal(withTitles.confident, true)
+})
+
+test("classifier: a Canvas copy of the student's own class counts once, as the student's row", () => {
+    const canvasCopy = { id: "99999999-9999-4999-8999-999999999999", name: "AP Chemistry - Patel", source: "canvas" }
+    const g = guessClassFromTranscript(CHEM_TALK, [canvasCopy, C.chem, C.hist], [])
+    assert.equal(g.classId, C.chem.id)
+    assert.equal(g.confident, true)
+})
+
+const NOW = new Date("2026-10-13T20:00:00Z")
+const ago = (min) => new Date(NOW.getTime() - min * 60000).toISOString()
+const lbl = (over = {}) => ({ startedAt: ago(60), classId: C.chem.id, className: "AP Chemistry", picked: true, at: ago(30), ...over })
+
+test("label: applies inside [now - (minutes + 240) min, now], for the same class or when picked", () => {
+    const at = { classId: "auto", minutes: 50, now: NOW }
+    assert.equal(applicableLabel(lbl(), at).classId, C.chem.id)
+    assert.equal(applicableLabel(lbl({ startedAt: ago(289) }), at).picked, true)
+    assert.equal(applicableLabel(lbl({ startedAt: ago(291) }), at), null) // stale
+    assert.equal(applicableLabel(lbl({ startedAt: new Date(NOW.getTime() + 60000).toISOString() }), at), null) // future
+    assert.equal(applicableLabel(lbl({ picked: false }), at), null) // other class, not picked
+    assert.equal(applicableLabel(lbl({ picked: false, classId: "auto", className: "class" }), at).classId, "auto")
+    for (const bad of [null, "x", [], { startedAt: "nope", classId: "a", className: "b" }, lbl({ classId: 5 }), lbl({ className: "" }), lbl({ classId: "x".repeat(65) })])
+        assert.equal(applicableLabel(bad, at), null)
+    assert.equal(cleanLabel(lbl({ picked: "yes" })).picked, false)
+})
+
+test("decide: picked label wins; auto takes the guess with a note; schedule kept unless clearly wrong", () => {
+    const auto = { classId: "auto", className: "class", teacher: null }
+    const sched = { classId: C.hist.id, className: "World History - Ortiz", teacher: "Mr. Ortiz" }
+    const sure = { classId: C.chem.id, className: "AP Chemistry - Patel", score: 12, runnerUp: 2, confident: true }
+    const unsure = { ...sure, score: 4, confident: false }
+
+    // The student's pick beats even a confident guess, with no note.
+    assert.deepEqual(decideClassLabel(auto, cleanLabel(lbl({ classId: C.span.id, className: "Spanish 3" })), sure),
+        { classId: C.span.id, className: "Spanish 3", teacher: null, classNote: null, changed: true })
+    assert.deepEqual(decideClassLabel(sched, cleanLabel(lbl({ classId: C.hist.id, className: "World History - Ortiz" })), sure),
+        { classId: C.hist.id, className: "World History - Ortiz", teacher: "Mr. Ortiz", classNote: null, changed: false })
+
+    // Auto: any best guess, said as a guess. No guess: stays "class".
+    assert.deepEqual(decideClassLabel(auto, null, unsure),
+        { classId: C.chem.id, className: "AP Chemistry - Patel", teacher: null, classNote: "we think this was AP Chemistry", changed: true })
+    assert.deepEqual(decideClassLabel(auto, null, null), { classId: "auto", className: "class", teacher: null, classNote: null, changed: false })
+    assert.equal(decideClassLabel(auto, cleanLabel(lbl({ classId: "auto", className: "class", picked: false })), sure).classId, C.chem.id)
+
+    // Scheduled: overruled only by a confident guess for another class.
+    const over = decideClassLabel(sched, null, sure)
+    assert.equal(over.classId, C.chem.id)
+    assert.equal(over.teacher, null) // Mr. Ortiz doesn't teach chemistry
+    assert.equal(over.classNote, "we think this was AP Chemistry")
+    assert.deepEqual(decideClassLabel(sched, null, unsure), { classId: C.hist.id, className: "World History - Ortiz", teacher: "Mr. Ortiz", classNote: null, changed: false })
+    assert.equal(decideClassLabel(sched, null, { ...sure, classId: C.hist.id }).classNote, null)
+})
+
+function labelDeps({ label = null, classData = { classes: ALL, assignments: [] }, ...over } = {}) {
+    const d = deps(over)
+    d.calls.cleared = []
+    d.calls.models = []
+    d.loadLabel = async () => label
+    d.loadClassData = async () => classData
+    d.clearLabel = async (userId, used) => { d.calls.cleared.push([userId, used.startedAt]) }
+    d.callModel = async (instr, input) => { d.calls.models.push(input); return JSON.stringify(GOOD) }
+    return d
+}
+
+test("handler: classLabel fields always present; nothing changes without a label or a clear guess", async () => {
+    const res = mockRes()
+    const d = labelDeps()
+    await handleClassRecap({}, res, BODY, d) // the Greek history lesson, scheduled as World History
+    assert.equal(res.statusCode, 200)
+    assert.equal(res.body.recap.classLabel, "World History")
+    assert.equal(res.body.recap.classLabelId, CLASS)
+    assert.equal(res.body.recap.classNote, null)
+    assert.equal(res.body.recap.headline, "HISTORY TEACHER ANNOUNCES ALPINE SKI EXPEDITION") // existing fields untouched
+    assert.deepEqual(d.calls.cleared, [])
+    // Old deps without the new reads still work (fields default to the body).
+    const r2 = mockRes()
+    await handleClassRecap({}, r2, BODY, deps())
+    assert.equal(r2.body.recap.classLabelId, CLASS)
+    assert.equal(r2.body.recap.classNote, null)
+})
+
+test("handler: auto recording → best guess, a note, the guessed class in the prompt, its homework", async () => {
+    const res = mockRes()
+    const d = labelDeps()
+    await handleClassRecap({}, res, { ...BODY, transcript: CHEM_TALK + " " + CHEM_TALK, classId: "auto", className: "class", teacher: null }, d)
+    assert.equal(res.statusCode, 200)
+    assert.equal(res.body.recap.classLabel, "AP Chemistry")
+    assert.equal(res.body.recap.classLabelId, C.chem.id)
+    assert.equal(res.body.recap.classNote, "we think this was AP Chemistry")
+    assert.match(d.calls.models[0], /Class: AP Chemistry\n/)
+    assert.equal(d.calls.homework[0][1], C.chem.id)
+})
+
+test("handler: picked label wins over the guess and is cleared once used; a stale one is ignored", async () => {
+    const pick = { startedAt: "2026-10-13T19:00:00Z", classId: C.span.id, className: "Spanish 3 Honors - Ruiz", picked: true, at: "2026-10-13T19:05:00Z" }
+    const res = mockRes()
+    const d = labelDeps({ label: pick })
+    await handleClassRecap({}, res, { ...BODY, transcript: CHEM_TALK + " " + CHEM_TALK, classId: "auto", className: "class", teacher: null }, d)
+    assert.equal(res.body.recap.classLabel, "Spanish 3 Honors - Ruiz")
+    assert.equal(res.body.recap.classLabelId, C.span.id)
+    assert.equal(res.body.recap.classNote, null)
+    assert.deepEqual(d.calls.cleared, [["user-1", pick.startedAt]])
+
+    const stale = mockRes()
+    const d2 = labelDeps({ label: { ...pick, startedAt: "2026-10-13T10:00:00Z" } }) // 10 h before now
+    await handleClassRecap({}, stale, BODY, d2)
+    assert.equal(stale.body.recap.classLabelId, CLASS)
+    assert.deepEqual(d2.calls.cleared, [])
+})
+
+test("handler: scheduled class + confident other class → relabeled with a note, teacher dropped", async () => {
+    const res = mockRes()
+    const d = labelDeps()
+    await handleClassRecap({}, res, { ...BODY, transcript: CHEM_TALK + " " + CHEM_TALK }, d)
+    assert.equal(res.body.recap.classLabelId, C.chem.id)
+    assert.equal(res.body.recap.classNote, "we think this was AP Chemistry")
+    assert.match(d.calls.models[0], /Teacher: \(unknown/)
+})
+
+test("handler: a failing label/class read or label clear never fails the recap", async () => {
+    const res = mockRes()
+    const d = labelDeps()
+    d.loadLabel = async () => { throw new Error("auth down") }
+    d.loadClassData = async () => { throw new Error("db down") }
+    await handleClassRecap({}, res, { ...BODY, classId: "auto", className: "class" }, d)
+    assert.equal(res.statusCode, 200)
+    assert.equal(res.body.recap.classLabel, "class")
+    assert.equal(res.body.recap.classLabelId, "auto")
+    assert.equal(res.body.recap.classNote, null)
+
+    const r2 = mockRes()
+    const d2 = labelDeps({ label: { startedAt: "2026-10-13T19:00:00Z", classId: CLASS, className: "World History", picked: true } })
+    d2.clearLabel = () => { throw new Error("nope") }
+    await handleClassRecap({}, r2, BODY, d2)
+    assert.equal(r2.statusCode, 200)
+})
+
+test("handler: label clear merges into the rest of user_metadata, and skips a newer label", async () => {
+    const { clearUsedLabel } = await import("../api/_class_guess.js")
+    const used = { startedAt: "2026-10-13T19:00:00Z" }
+    const db = (label) => {
+        const calls = []
+        return {
+            calls,
+            auth: { admin: {
+                getUserById: async () => ({ data: { user: { user_metadata: { name: "J", age_confirmed_13: true, ae_label: label } } }, error: null }),
+                updateUserById: async (id, attrs) => { calls.push([id, attrs]); return { error: null } },
+            } },
+        }
+    }
+    const a = db({ ...used, classId: "auto" })
+    assert.equal(await clearUsedLabel(a, "u", used), true)
+    assert.deepEqual(a.calls, [["u", { user_metadata: { name: "J", age_confirmed_13: true, ae_label: null } }]])
+    const b = db({ startedAt: "2026-10-13T19:55:00Z", classId: "auto" })
+    assert.equal(await clearUsedLabel(b, "u", used), false)
+    assert.deepEqual(b.calls, [])
 })

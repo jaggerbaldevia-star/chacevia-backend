@@ -20,6 +20,10 @@ import { resolvePremium } from "./_premium.js"
 import { checkLimit } from "./_limits.js"
 import { localParts, addDaysIso, classesOn } from "./_schedule.js"
 import { userTz } from "./_paper.js"
+import { waitUntil } from "@vercel/functions"
+import { guessClassFromTranscript, applicableLabel, decideClassLabel, loadClassData, loadLabel, clearUsedLabel } from "./_class_guess.js"
+
+export { guessClassFromTranscript, applicableLabel, decideClassLabel, cleanLabel, subjectFor, subjectName } from "./_class_guess.js"
 
 export const RECAP_ENDPOINT = "class-recap"
 export const MAX_TRANSCRIPT = 120000
@@ -779,6 +783,11 @@ export function realDeps() {
         checkLimit: (userId, endpoint) => checkLimit(userId, endpoint),
         userTz: (userId) => userTz(svc(), userId),
         fetchHomework: (userId, classId, today) => fetchHomework(svc(), userId, classId, today),
+        loadLabel: (userId) => loadLabel(svc(), userId),
+        loadClassData: (userId) => loadClassData(svc(), userId),
+        // After the response; a failure only means the label is reused or expires.
+        clearLabel: (userId, used) => waitUntil(clearUsedLabel(svc(), userId, used).catch((e) =>
+            console.error("class-recap label clear failed:", (e && (e.code || e.status || e.name)) || "unknown"))),
         callModel: callRecapModel,
         now: () => new Date(),
     }
@@ -788,7 +797,9 @@ export function realDeps() {
  * POST /api/class-recap
  * body { transcript, classId, className, teacher, date, tz, minutes, words, studentName,
  *        context?: string[] (≤100 × 60 chars), quality?: { farField?, unclearRatio? } }
- * 200 { recap } · 400/413 bad input · 401 not logged in · 402 not premium
+ * 200 { recap } — recap also carries classLabel (final class name), classLabelId
+ *   (final class id, or "auto") and classNote ("we think this was …" or null)
+ * 400/413 bad input · 401 not logged in · 402 not premium
  * 429 over 10 a day · 503 couldn't check plan/meter · 502 the model failed
  */
 export async function handleClassRecap(req, res, body, deps = realDeps()) {
@@ -815,12 +826,29 @@ export async function handleClassRecap(req, res, body, deps = realDeps()) {
     if (!lim.ok) return res.status(lim.status).json(lim.payload)
 
     try {
-        const tz = input.tz || (await deps.userTz(userId))
+        // Which class was this? The student's own label, or a guess from the
+        // transcript. Neither read may ever cost the student their recap.
+        const quiet = (fn) => (typeof fn === "function" ? Promise.resolve().then(() => fn(userId)).catch(() => null) : Promise.resolve(null))
+        const [tz, rawLabel, classData] = await Promise.all([
+            input.tz || deps.userTz(userId),
+            quiet(deps.loadLabel),
+            quiet(deps.loadClassData),
+        ])
         const today = localParts(deps.now(), tz).iso
-        const homework = await deps.fetchHomework(userId, input.classId, today)
         const { text, truncated } = truncateTranscript(input.transcript)
+        const label = applicableLabel(rawLabel, { classId: input.classId, minutes: input.minutes, now: deps.now() })
+        let guess = null
+        if (!(label && label.picked) && classData) {
+            try { guess = guessClassFromTranscript(text, classData.classes, classData.assignments) } catch (e) { guess = null }
+        }
+        const final = decideClassLabel(input, label, guess)
+
+        const homework = await deps.fetchHomework(userId, final.classId, today)
         const ctx = {
             ...input,
+            classId: final.classId,
+            className: final.className,
+            teacher: final.teacher,
             transcript: text,
             truncated,
             date: input.date || today,
@@ -832,13 +860,18 @@ export async function handleClassRecap(req, res, body, deps = realDeps()) {
         ctx.vocab = sourceWords(ctx)
 
         const { recap, stats } = await makeRecap(ctx, deps.callModel, { started: t0 })
+        if (label && typeof deps.clearLabel === "function") {
+            try { Promise.resolve(deps.clearLabel(userId, label)).catch(() => {}) } catch (e) { /* never fails the recap */ }
+        }
         // Lengths, counts and timings only. Never the transcript, never a name.
         console.log("class-recap", JSON.stringify({
             chars: input.transcript.length, sent: text.length, truncated, words: input.words,
             minutes: input.minutes, homework: homework.length, names: ctx.classmates.length, context: input.context.length,
+            label: label ? (label.picked ? "picked" : "seen") : "none", guess: guess ? guess.score : 0,
+            sure: !!(guess && guess.confident), relabeled: final.changed,
             calls: stats.calls, regen: stats.regen, scrubbed: stats.scrubbed, ms: Date.now() - t0,
         }))
-        return res.status(200).json({ recap })
+        return res.status(200).json({ recap: { ...recap, classLabel: final.className, classLabelId: final.classId, classNote: final.classNote } })
     } catch (err) {
         // The provider's own error text says what was wrong with the request; it
         // never contains the transcript. Clipped, and still no user content.
