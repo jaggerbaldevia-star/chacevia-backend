@@ -118,6 +118,10 @@
     {
       "source": "/api/clean-assignment",
       "destination": "/api/schedule-extract?action=clean-assignment"
+    },
+    {
+      "source": "/api/owner-stats",
+      "destination": "/api/account?action=owner-stats"
     }
   ],
   "headers": [

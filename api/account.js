@@ -21,6 +21,7 @@ import { svc, getUserId, requireCoins } from "./_coins.js"
 import { setCors } from "./_cors.js"
 import { appleConfig, exchangeCode, revokeToken } from "./_apple.js"
 import { openSecret, sealSecret } from "./_canvas.js"
+import { handleOwnerStats } from "./_stats.js"
 
 // Every table holding rows owned by a user, children before parents so the
 // explicit deletes don't depend on cascade ordering.
@@ -288,6 +289,7 @@ export default async function handler(req, res) {
     const action = (req.query && req.query.action) || ""
     if (action === "delete") return handleDelete(req, res)
     if (action === "apple-token") return handleAppleToken(req, res)
+    if (action === "owner-stats") return handleOwnerStats(req, res)
 
     return res.status(400).json({ error: "Unknown action." })
 }
